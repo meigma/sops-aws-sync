@@ -13,11 +13,15 @@ import (
 )
 
 const (
-	statusConverged            = "converged"
-	verificationNotRun         = "not-run"
-	verificationPollInterval   = 250 * time.Millisecond
-	maximumPreconditionReplans = 1
+	statusConverged          = "converged"
+	statusVerificationFailed = "verification-failed"
+	verificationNotRun       = "not-run"
+	verificationFailed       = "failed"
+	verificationPollInterval = 250 * time.Millisecond
+	maximumPlanRebuilds      = 1
 )
+
+var errPlanChanged = errors.New("reconciliation plan changed")
 
 // SecretsManager is the direct observation and Phase 2 mutation port.
 type SecretsManager interface {
@@ -52,8 +56,6 @@ func (RandomTokenSource) NewToken() (string, error) {
 type ReconcileInput struct {
 	// RepositoryID is the stable ownership identity.
 	RepositoryID string
-	// Revision is the commit-ish resolved by the source adapter.
-	Revision string
 	// SourceRoot selects committed SOPS JSON documents.
 	SourceRoot string
 	// SecretPrefix defines the AWS naming and ownership boundary.
@@ -131,24 +133,22 @@ func (failure *OutcomeError) Unwrap() error {
 
 // Service orchestrates one direct desired-name reconciliation slice.
 type Service struct {
-	source    SourceRepository
-	decrypter JSONDecrypter
-	secrets   SecretsManager
-	tokens    TokenSource
-	logger    *slog.Logger
-	version   string
+	desired DesiredSnapshot
+	secrets SecretsManager
+	tokens  TokenSource
+	logger  *slog.Logger
+	version string
 }
 
 // NewService constructs the Phase 2 application service.
 func NewService(
-	source SourceRepository,
-	decrypter JSONDecrypter,
+	desired DesiredSnapshot,
 	secrets SecretsManager,
 	tokens TokenSource,
 	logger *slog.Logger,
 	version string,
 ) (*Service, error) {
-	if source == nil || decrypter == nil || secrets == nil || tokens == nil {
+	if desired.Revision().Value() == "" || secrets == nil || tokens == nil {
 		return nil, errors.New("application ports are required")
 	}
 	if logger == nil {
@@ -156,12 +156,11 @@ func NewService(
 	}
 
 	return &Service{
-		source:    source,
-		decrypter: decrypter,
-		secrets:   secrets,
-		tokens:    tokens,
-		logger:    logger,
-		version:   version,
+		desired: desired,
+		secrets: secrets,
+		tokens:  tokens,
+		logger:  logger,
+		version: version,
 	}, nil
 }
 
@@ -201,15 +200,37 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (Report,
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
-	if err := plan.ValidatePhaseTwo(); err != nil {
+	if validationErr := plan.ValidatePhaseTwo(); validationErr != nil {
 		report.Status = string(OutcomeConflict)
 		return report, NewOutcomeError(OutcomeConflict)
 	}
-	for index, operation := range plan.Operations() {
-		if err := service.applyOperation(ctx, scope, operation, index, input.ShowResourceNames); err != nil {
-			report.Status, report.Verification = applyOutcomeReport(err)
+	for rebuilds := 0; ; rebuilds++ {
+		rebuild, applyErr := service.applyPlan(ctx, scope, plan, input.ShowResourceNames)
+		if applyErr != nil {
+			report.Status, report.Verification = applyOutcomeReport(applyErr)
 			report.DurationMilliseconds = time.Since(started).Milliseconds()
-			return report, err
+			return report, applyErr
+		}
+		if !rebuild {
+			break
+		}
+		if rebuilds >= maximumPlanRebuilds {
+			report.Status = statusVerificationFailed
+			report.Verification = verificationFailed
+			report.DurationMilliseconds = time.Since(started).Milliseconds()
+			return report, NewOutcomeError(OutcomeVerification)
+		}
+		rebuiltPlan, rebuildErr := service.rebuildPlan(ctx, desired, scope)
+		if rebuildErr != nil {
+			report.Status, report.Verification = applyOutcomeReport(rebuildErr)
+			report.DurationMilliseconds = time.Since(started).Milliseconds()
+			return report, rebuildErr
+		}
+		plan = rebuiltPlan
+		report.Counts = plan.Counts()
+		if err := plan.ValidatePhaseTwo(); err != nil {
+			report.Status = string(OutcomeConflict)
+			return report, NewOutcomeError(OutcomeConflict)
 		}
 	}
 	verified, verificationErr := service.verify(ctx, input, desired, scope)
@@ -221,8 +242,8 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (Report,
 		return report, verificationErr
 	}
 	if !verified.Converged() {
-		report.Status = "verification-failed"
-		report.Verification = "failed"
+		report.Status = statusVerificationFailed
+		report.Verification = verificationFailed
 		report.DurationMilliseconds = time.Since(started).Milliseconds()
 		return report, NewOutcomeError(OutcomeVerification)
 	}
@@ -234,16 +255,53 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (Report,
 	return report, nil
 }
 
-// buildPlan constructs desired state, derives scope, observes every desired name, and plans.
+// applyPlan applies one phase-ordered plan or asks the caller to rebuild all decisions.
+func (service *Service) applyPlan(
+	ctx context.Context,
+	scope domain.ScopeIdentity,
+	plan domain.Plan,
+	showName bool,
+) (bool, error) {
+	for index, operation := range plan.Operations() {
+		if err := service.applyOperation(ctx, scope, operation, index, showName); err != nil {
+			if errors.Is(err, errPlanChanged) {
+				return true, nil
+			}
+
+			return false, err
+		}
+	}
+
+	return false, nil
+}
+
+// rebuildPlan re-observes every desired name before deriving a replacement plan.
+func (service *Service) rebuildPlan(
+	ctx context.Context,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+) (domain.Plan, error) {
+	observed, err := service.observeAll(ctx, desired, scope)
+	if err != nil {
+		return domain.Plan{}, service.classifyApplyError(ctx, err)
+	}
+	plan, err := domain.BuildPlan(desired, observed)
+	if err != nil {
+		return domain.Plan{}, NewOutcomeError(OutcomeApplyFailed)
+	}
+
+	return plan, nil
+}
+
+// buildPlan derives scope, observes every desired name, and plans.
 func (service *Service) buildPlan(
 	ctx context.Context,
 	input ReconcileInput,
 ) (domain.Plan, []domain.DesiredSecret, domain.ScopeIdentity, domain.Revision, error) {
-	desired, revision, err := BuildDesiredSnapshot(ctx, service.source, service.decrypter, DesiredInput{
-		Revision: input.Revision, SourceRoot: input.SourceRoot, SecretPrefix: input.SecretPrefix,
-	})
-	if err != nil {
-		return domain.Plan{}, nil, domain.ScopeIdentity{}, domain.Revision{}, newOutcomeCause(OutcomeInvalid, err)
+	desired := service.desired.copySecrets()
+	revision := service.desired.Revision()
+	if err := ctx.Err(); err != nil {
+		return domain.Plan{}, desired, domain.ScopeIdentity{}, revision, newOutcomeCause(OutcomeInterrupted, err)
 	}
 	scope, err := domain.NewScopeIdentity(input.RepositoryID, input.SourceRoot, input.SecretPrefix)
 	if err != nil {
@@ -287,11 +345,19 @@ func (service *Service) applyOperation(
 	index int,
 	showName bool,
 ) error {
-	prepared, executable, err := service.prepareOperation(ctx, scope, operation)
-	if err != nil || !executable {
-		return err
+	current, err := service.observeOne(ctx, scope, operation.Desired())
+	if err != nil {
+		return service.classifyApplyError(ctx, err)
 	}
-	operation = prepared
+	switch domain.CheckPrecondition(operation, current) {
+	case domain.TransitionSucceeded, domain.TransitionReplan:
+		return errPlanChanged
+	case domain.TransitionConflict:
+		return NewOutcomeError(OutcomeConflict)
+	case domain.TransitionRetrySameToken:
+		return NewOutcomeError(OutcomeApplyFailed)
+	case domain.TransitionApply:
+	}
 	token, err := service.tokens.NewToken()
 	if err != nil {
 		return NewOutcomeError(OutcomeApplyFailed)
@@ -310,43 +376,6 @@ func (service *Service) applyOperation(
 	}
 
 	return service.resolveAmbiguous(ctx, scope, operation, token)
-}
-
-// prepareOperation permits one safe same-resource replan before allocating a token.
-func (service *Service) prepareOperation(
-	ctx context.Context,
-	scope domain.ScopeIdentity,
-	operation domain.Operation,
-) (domain.Operation, bool, error) {
-	for replans := 0; ; replans++ {
-		current, err := service.observeOne(ctx, scope, operation.Desired())
-		if err != nil {
-			return domain.Operation{}, false, service.classifyApplyError(ctx, err)
-		}
-		switch domain.CheckPrecondition(operation, current) {
-		case domain.TransitionSucceeded:
-			return domain.Operation{}, false, nil
-		case domain.TransitionConflict:
-			return domain.Operation{}, false, NewOutcomeError(OutcomeConflict)
-		case domain.TransitionReplan:
-			if replans >= maximumPreconditionReplans {
-				return domain.Operation{}, false, NewOutcomeError(OutcomeVerification)
-			}
-			replanned, executable, replanErr := replanOne(operation.Desired(), current)
-			if replanErr != nil {
-				return domain.Operation{}, false, replanErr
-			}
-			if !executable {
-				return domain.Operation{}, false, nil
-			}
-			operation = replanned
-			continue
-		case domain.TransitionApply:
-			return operation, true, nil
-		case domain.TransitionRetrySameToken:
-			return domain.Operation{}, false, NewOutcomeError(OutcomeApplyFailed)
-		}
-	}
 }
 
 // resolveAmbiguous re-observes one uncertain mutation before a same-token retry.
@@ -379,29 +408,6 @@ func (service *Service) resolveAmbiguous(
 	}
 
 	return NewOutcomeError(OutcomeApplyFailed)
-}
-
-// replanOne derives one replacement operation from newly observed safe state.
-func replanOne(desired domain.DesiredSecret, current domain.ObservedSlot) (domain.Operation, bool, error) {
-	plan, err := domain.BuildPlan([]domain.DesiredSecret{desired}, []domain.ObservedSlot{current})
-	if err != nil {
-		return domain.Operation{}, false, NewOutcomeError(OutcomeApplyFailed)
-	}
-	if len(plan.Conflicts()) > 0 {
-		return domain.Operation{}, false, NewOutcomeError(OutcomeConflict)
-	}
-	if err := plan.ValidatePhaseTwo(); err != nil {
-		return domain.Operation{}, false, NewOutcomeError(OutcomeConflict)
-	}
-	operations := plan.Operations()
-	if len(operations) == 0 {
-		return domain.Operation{}, false, nil
-	}
-	if len(operations) != 1 {
-		return domain.Operation{}, false, NewOutcomeError(OutcomeApplyFailed)
-	}
-
-	return operations[0], true, nil
 }
 
 // mutate dispatches only the create and update operations supported in Phase 2.
@@ -528,7 +534,7 @@ func applyOutcomeReport(err error) (string, string) {
 	case OutcomeInterrupted:
 		return string(OutcomeInterrupted), verificationNotRun
 	case OutcomeVerification:
-		return "verification-failed", "failed"
+		return statusVerificationFailed, verificationFailed
 	case OutcomeInvalid:
 		return string(OutcomeInvalid), verificationNotRun
 	case OutcomeApplyFailed:

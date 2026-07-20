@@ -186,18 +186,39 @@ func TestDetailedPlanExitAndReportFile(t *testing.T) {
 	assert.NotContains(t, string(encoded), "/acme/payments")
 }
 
-// TestApplicationOutcomeMapsToStableExitCode proves conflict compatibility status.
+// TestApplicationOutcomeMapsToStableExitCode proves application classifications retain public statuses.
 func TestApplicationOutcomeMapsToStableExitCode(t *testing.T) {
 	t.Parallel()
 
-	report := successfulReport()
-	report.Status = "conflict"
-	runner := &recordingRunner{syncReport: report, syncErr: application.NewOutcomeError(application.OutcomeConflict)}
-	root := NewRootCommand(Options{Out: ioBuffer(), Viper: viper.New(), Runner: runner, NewLogger: testLogger})
-	root.SetArgs([]string{"sync", "--repository-id", "meigma/example", "--secret-prefix", "/acme/payments"})
+	tests := []struct {
+		kind     application.OutcomeKind
+		exitCode int
+	}{
+		{kind: application.OutcomeConflict, exitCode: 4},
+		{kind: application.OutcomeApplyFailed, exitCode: 5},
+		{kind: application.OutcomeInterrupted, exitCode: 130},
+	}
+	for _, test := range tests {
+		t.Run(string(test.kind), func(t *testing.T) {
+			t.Parallel()
 
-	err := root.ExecuteContext(context.Background())
-	assert.Equal(t, 4, ExitCode(err))
+			report := successfulReport()
+			report.Status = string(test.kind)
+			runner := &recordingRunner{
+				syncReport: report,
+				syncErr:    application.NewOutcomeError(test.kind),
+			}
+			root := NewRootCommand(Options{
+				Out: ioBuffer(), Viper: viper.New(), Runner: runner, NewLogger: testLogger,
+			})
+			root.SetArgs([]string{
+				"sync", "--repository-id", "meigma/example", "--secret-prefix", "/acme/payments",
+			})
+
+			err := root.ExecuteContext(context.Background())
+			assert.Equal(t, test.exitCode, ExitCode(err))
+		})
+	}
 }
 
 // successfulReport returns one converged secret-free test report.

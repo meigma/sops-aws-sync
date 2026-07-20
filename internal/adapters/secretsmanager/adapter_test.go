@@ -166,6 +166,26 @@ func TestObserveDoesNotReadPayloadBeforeMetadataOwnership(t *testing.T) {
 	}
 }
 
+// TestObserveRejectsCurrentVersionWithoutPayload proves inconsistent value evidence fails closed.
+func TestObserveRejectsCurrentVersionWithoutPayload(t *testing.T) {
+	t.Parallel()
+
+	desired, scope := adapterDesired(t)
+	client := &fakeClient{
+		describeOutput: ownedDescription(desired, scope),
+		getOutput: &awssm.GetSecretValueOutput{
+			VersionId: aws.String("version-1"), VersionStages: []string{awsCurrent},
+		},
+	}
+	adapter, err := New(client, time.Second)
+	require.NoError(t, err)
+
+	evidence, err := adapter.Observe(context.Background(), desired, scope)
+	require.NoError(t, err)
+	assert.Equal(t, domain.ObservedInvalid, domain.ClassifyDirect(desired, scope, evidence).Kind())
+	assert.Equal(t, 1, client.getCalls)
+}
+
 // TestCreateAndUpdateUseCanonicalValuesTokensAndReservedTags proves mutation request shape.
 func TestCreateAndUpdateUseCanonicalValuesTokensAndReservedTags(t *testing.T) {
 	t.Parallel()

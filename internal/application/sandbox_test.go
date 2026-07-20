@@ -57,9 +57,12 @@ func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
 		},
 	}}
 	decrypter := &fakeDecrypter{value: initialValue}
+	desiredSnapshot, err := application.BuildDesiredSnapshot(ctx, source, decrypter, application.DesiredInput{
+		Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: prefix,
+	})
+	require.NoError(t, err)
 	service, err := application.NewService(
-		source,
-		decrypter,
+		desiredSnapshot,
 		adapter,
 		application.RandomTokenSource{},
 		slog.Default(),
@@ -67,7 +70,7 @@ func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
 	)
 	require.NoError(t, err)
 	input := application.ReconcileInput{
-		RepositoryID: "meigma/sops-aws-sync-sandbox", Revision: "HEAD", SourceRoot: "secrets",
+		RepositoryID: "meigma/sops-aws-sync-sandbox", SourceRoot: "secrets",
 		SecretPrefix: prefix, VerificationTimeout: 30 * time.Second,
 	}
 

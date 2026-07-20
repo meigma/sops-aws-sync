@@ -44,8 +44,13 @@ func TestClassifyDirectCoversDesiredNameSafetyStates(t *testing.T) {
 		},
 		{name: "binary", evidence: ownedEvidence(scope, desired, nil, true), want: domain.ObservedOwnedActiveBinary},
 		{
-			name:     "without current",
+			name:     "current version without payload",
 			evidence: ownedEvidence(scope, desired, nil, false),
+			want:     domain.ObservedInvalid,
+		},
+		{
+			name:     "without current version",
+			evidence: evidenceWithNoCurrent(ownedEvidence(scope, desired, nil, false)),
 			want:     domain.ObservedOwnedWithoutCurrent,
 		},
 		{name: "scheduled", evidence: scheduledEvidence(scope, desired), want: domain.ObservedOwnedScheduled},

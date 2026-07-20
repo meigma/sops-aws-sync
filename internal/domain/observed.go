@@ -97,7 +97,7 @@ func ClassifyDirect(
 		return newObservedSlot(name, ObservedOwnedActiveBinary, source, "", evidence.CurrentVersion, "")
 	}
 	if evidence.SecretString == nil {
-		return newObservedSlot(name, ObservedOwnedWithoutCurrent, source, "", evidence.CurrentVersion, "")
+		return newObservedSlot(name, ObservedInvalid, source, "", evidence.CurrentVersion, "payload")
 	}
 
 	return newObservedSlot(name, ObservedOwnedActiveString, source, *evidence.SecretString, evidence.CurrentVersion, "")

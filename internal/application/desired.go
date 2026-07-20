@@ -45,32 +45,48 @@ type DesiredInput struct {
 	SecretPrefix string
 }
 
+// DesiredSnapshot is the complete desired state from one exact committed revision.
+type DesiredSnapshot struct {
+	secrets  []domain.DesiredSecret
+	revision domain.Revision
+}
+
+// Revision returns the exact committed revision behind the desired snapshot.
+func (snapshot DesiredSnapshot) Revision() domain.Revision {
+	return snapshot.revision
+}
+
+// copySecrets returns an isolated slice of immutable desired values.
+func (snapshot DesiredSnapshot) copySecrets() []domain.DesiredSecret {
+	return append([]domain.DesiredSecret(nil), snapshot.secrets...)
+}
+
 // BuildDesiredSnapshot constructs the complete immutable desired snapshot.
 func BuildDesiredSnapshot(
 	ctx context.Context,
 	sourceRepository SourceRepository,
 	decrypter JSONDecrypter,
 	input DesiredInput,
-) ([]domain.DesiredSecret, domain.Revision, error) {
+) (DesiredSnapshot, error) {
 	if sourceRepository == nil || decrypter == nil {
-		return nil, domain.Revision{}, errors.New("desired-state adapters are required")
+		return DesiredSnapshot{}, errors.New("desired-state adapters are required")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, domain.Revision{}, fmt.Errorf("build desired snapshot: %w", err)
+		return DesiredSnapshot{}, fmt.Errorf("build desired snapshot: %w", err)
 	}
 	snapshot, err := sourceRepository.Load(ctx, input.Revision, input.SourceRoot)
 	if err != nil {
-		return nil, domain.Revision{}, fmt.Errorf("load committed source: %w", err)
+		return DesiredSnapshot{}, fmt.Errorf("load committed source: %w", err)
 	}
 	desired := make([]domain.DesiredSecret, 0, len(snapshot.Documents))
 	for _, document := range snapshot.Documents {
 		value, decryptErr := decrypter.DecryptJSON(ctx, document.Data)
 		if decryptErr != nil {
-			return nil, domain.Revision{}, fmt.Errorf("decrypt committed source: %w", decryptErr)
+			return DesiredSnapshot{}, fmt.Errorf("decrypt committed source: %w", decryptErr)
 		}
 		name, source, mapErr := domain.MapSourcePath(input.SourceRoot, input.SecretPrefix, document.Path)
 		if mapErr != nil {
-			return nil, domain.Revision{}, fmt.Errorf("map committed source: %w", mapErr)
+			return DesiredSnapshot{}, fmt.Errorf("map committed source: %w", mapErr)
 		}
 		desired = append(desired, domain.NewDesiredSecret(name, source, value, snapshot.Revision))
 	}
@@ -79,9 +95,9 @@ func BuildDesiredSnapshot(
 	})
 	for index := 1; index < len(desired); index++ {
 		if desired[index-1].Name() == desired[index].Name() {
-			return nil, domain.Revision{}, errors.New("multiple source documents map to the same secret")
+			return DesiredSnapshot{}, errors.New("multiple source documents map to the same secret")
 		}
 	}
 
-	return desired, snapshot.Revision, nil
+	return DesiredSnapshot{secrets: desired, revision: snapshot.Revision}, nil
 }

@@ -24,6 +24,31 @@ const (
 	loadOptionCapacity = 3
 )
 
+// loadError retains cancellation and setup classification behind a safe message.
+type loadError struct {
+	configuration bool
+	cause         error
+}
+
+// Error returns a stable message that does not disclose credential-provider details.
+func (failure *loadError) Error() string {
+	if failure.configuration {
+		return "AWS configuration is invalid"
+	}
+
+	return "AWS credential loading failed"
+}
+
+// Unwrap retains cancellation and deadline evidence for the composition root.
+func (failure *loadError) Unwrap() error {
+	return failure.cause
+}
+
+// ConfigurationFailure distinguishes operator configuration from provider availability.
+func (failure *loadError) ConfigurationFailure() bool {
+	return failure.configuration
+}
+
 // Client is the consumed AWS Secrets Manager SDK surface.
 type Client interface {
 	DescribeSecret(
@@ -103,16 +128,21 @@ func Load(ctx context.Context, configuration LoadOptions) (*Adapter, error) {
 	}
 	awsConfiguration, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
 	if err != nil {
-		return nil, errors.New("load standard AWS configuration failed")
+		return nil, &loadError{configuration: true, cause: err}
 	}
 	if awsConfiguration.Region == "" {
-		return nil, errors.New("AWS Region is not configured")
+		return nil, &loadError{configuration: true, cause: errors.New("AWS Region is not configured")}
 	}
-	if _, err := awsConfiguration.Credentials.Retrieve(ctx); err != nil {
-		return nil, errors.New("AWS credentials are not available from the standard chain")
+	if _, retrieveErr := awsConfiguration.Credentials.Retrieve(ctx); retrieveErr != nil {
+		return nil, &loadError{cause: retrieveErr}
 	}
 
-	return New(awssm.NewFromConfig(awsConfiguration), configuration.OperationTimeout)
+	adapter, err := New(awssm.NewFromConfig(awsConfiguration), configuration.OperationTimeout)
+	if err != nil {
+		return nil, &loadError{configuration: true, cause: err}
+	}
+
+	return adapter, nil
 }
 
 // Observe classifies direct metadata before loading an owned current payload.

@@ -90,6 +90,60 @@ type memorySecrets struct {
 	observationErrs []error
 }
 
+// orderingSecrets introduces owned drift before the first create and records rebuilt phase order.
+type orderingSecrets struct {
+	current      map[string]domain.ObservedEvidence
+	observeCalls map[string]int
+	operations   []string
+	driftName    string
+}
+
+// Observe introduces one create-to-update transition and otherwise returns stored evidence.
+func (secrets *orderingSecrets) Observe(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+) (domain.ObservedEvidence, error) {
+	name := desired.Name().Value()
+	call := secrets.observeCalls[name]
+	secrets.observeCalls[name]++
+	if name == secrets.driftName && call == 1 {
+		secrets.current[name] = ownedApplicationEvidenceWithValue(desired, scope, `{"password":"old"}`)
+	}
+
+	return secrets.current[name], nil
+}
+
+// Create records a phase-ordered create and converges the stored evidence.
+func (secrets *orderingSecrets) Create(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	_ string,
+) error {
+	name := desired.Name().Value()
+	secrets.operations = append(secrets.operations, "create:"+name)
+	secrets.current[name] = ownedApplicationEvidence(desired, scope)
+
+	return nil
+}
+
+// Update records a phase-ordered update and converges the stored evidence.
+func (secrets *orderingSecrets) Update(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	_ string,
+) error {
+	name := desired.Name().Value()
+	secrets.operations = append(secrets.operations, "update:"+name)
+	current := secrets.current[name]
+	value := string(desired.Value().CopyCanonicalJSON())
+	current.SecretString = &value
+	secrets.current[name] = current
+
+	return nil
+}
+
 // Observe returns the current direct desired-name evidence.
 func (secrets *memorySecrets) Observe(
 	_ context.Context,
@@ -146,13 +200,12 @@ func (secrets *memorySecrets) Update(
 
 // appTestContext groups one service and its observable fake collaborators.
 type appTestContext struct {
-	service   *application.Service
-	decrypter *fakeDecrypter
-	secrets   *memorySecrets
-	tokens    *sequenceTokens
-	desired   domain.DesiredSecret
-	input     application.ReconcileInput
-	logs      *bytes.Buffer
+	service *application.Service
+	secrets *memorySecrets
+	tokens  *sequenceTokens
+	desired domain.DesiredSecret
+	input   application.ReconcileInput
+	logs    *bytes.Buffer
 }
 
 // TestSyncCreateUpdateAndNoOp proves the supported Phase 2 vertical slice.
@@ -251,23 +304,44 @@ func TestSyncResolvesAmbiguousUpdateWithoutBlindRetry(t *testing.T) {
 	assert.Equal(t, "converged", report.Status)
 }
 
-// TestSyncReplansCreateAsUpdateAfterHarmlessDrift proves one bounded precondition replan.
-func TestSyncReplansCreateAsUpdateAfterHarmlessDrift(t *testing.T) {
+// TestSyncRebuildsWholePlanAfterHarmlessDrift proves phase order and counts come from the replacement plan.
+func TestSyncRebuildsWholePlanAfterHarmlessDrift(t *testing.T) {
 	t.Parallel()
 
-	testContext := newAppTestContext(t)
-	old := ownedApplicationEvidenceWithValue(
-		testContext.desired,
-		testContext.secrets.scope,
-		`{"password":"old"}`,
-	)
-	testContext.secrets.observations = []domain.ObservedEvidence{{}, old}
-	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	value, err := domain.NewSecretValue([]byte(`{"password":"desired"}`))
 	require.NoError(t, err)
-	assert.Zero(t, testContext.secrets.createCalls)
-	assert.Equal(t, 1, testContext.secrets.updateCalls)
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	source := &fakeSource{snapshot: application.SourceSnapshot{
+		Revision: revision,
+		Documents: []application.EncryptedDocument{
+			{Path: "secrets/a.sops.json", Data: []byte("encrypted-a")},
+			{Path: "secrets/b.sops.json", Data: []byte("encrypted-b")},
+		},
+	}}
+	snapshot, err := application.BuildDesiredSnapshot(context.Background(), source, &fakeDecrypter{value: value},
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"})
+	require.NoError(t, err)
+	secrets := &orderingSecrets{
+		current: map[string]domain.ObservedEvidence{}, observeCalls: map[string]int{},
+		driftName: "/acme/payments/a",
+	}
+	service, err := application.NewService(
+		snapshot, secrets, &sequenceTokens{}, slog.Default(), "test",
+	)
+	require.NoError(t, err)
+	report, err := service.Sync(context.Background(), application.ReconcileInput{
+		RepositoryID: "meigma/example", SourceRoot: "secrets", SecretPrefix: "/acme/payments",
+		VerificationTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"create:/acme/payments/b",
+		"update:/acme/payments/a",
+	}, secrets.operations)
+	assert.Equal(t, 1, report.Counts.Create)
+	assert.Equal(t, 1, report.Counts.Update)
 	assert.Equal(t, "converged", report.Status)
-	require.Len(t, testContext.secrets.tokens, 1)
 }
 
 // TestSyncBoundsRepeatedPreconditionReplans proves concurrent churn cannot loop indefinitely.
@@ -280,7 +354,7 @@ func TestSyncBoundsRepeatedPreconditionReplans(t *testing.T) {
 		testContext.secrets.scope,
 		`{"password":"old"}`,
 	)
-	testContext.secrets.observations = []domain.ObservedEvidence{{}, old, {}}
+	testContext.secrets.observations = []domain.ObservedEvidence{{}, old, {}, old}
 	report, err := testContext.service.Sync(context.Background(), testContext.input)
 	var outcome *application.OutcomeError
 	require.ErrorAs(t, err, &outcome)
@@ -362,21 +436,6 @@ func TestSyncConflictPerformsNoMutation(t *testing.T) {
 	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
 }
 
-// TestInvalidDesiredStatePerformsNoAWSCall proves complete desired validation precedes observation.
-func TestInvalidDesiredStatePerformsNoAWSCall(t *testing.T) {
-	t.Parallel()
-
-	testContext := newAppTestContext(t)
-	testContext.decrypter.err = errors.New("decryption sentinel")
-	report, err := testContext.service.Sync(context.Background(), testContext.input)
-	var outcome *application.OutcomeError
-	require.ErrorAs(t, err, &outcome)
-	assert.Equal(t, application.OutcomeInvalid, outcome.Kind())
-	assert.Equal(t, "invalid", report.Status)
-	assert.Zero(t, testContext.secrets.observeCalls)
-	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
-}
-
 // TestPlanObservationFailureUsesOperationalExitClass proves service failures are not invalid input.
 func TestPlanObservationFailureUsesOperationalExitClass(t *testing.T) {
 	t.Parallel()
@@ -427,17 +486,19 @@ func newAppTestContext(t *testing.T) *appTestContext {
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	decrypter := &fakeDecrypter{value: value}
-	service, err := application.NewService(source, decrypter, secrets, tokens, logger, "test")
+	desiredSnapshot, err := application.BuildDesiredSnapshot(context.Background(), source, decrypter,
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"})
+	require.NoError(t, err)
+	service, err := application.NewService(desiredSnapshot, secrets, tokens, logger, "test")
 	require.NoError(t, err)
 
 	return &appTestContext{
-		service:   service,
-		decrypter: decrypter,
-		secrets:   secrets,
-		tokens:    tokens,
-		desired:   desired,
+		service: service,
+		secrets: secrets,
+		tokens:  tokens,
+		desired: desired,
 		input: application.ReconcileInput{
-			RepositoryID: "meigma/example", Revision: "HEAD", SourceRoot: "secrets",
+			RepositoryID: "meigma/example", SourceRoot: "secrets",
 			SecretPrefix: "/acme/payments", VerificationTimeout: time.Second,
 		},
 		logs: logs,
