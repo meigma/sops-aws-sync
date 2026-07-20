@@ -35,6 +35,11 @@ fileGroups:
     - 'release-please-config.json'
     - '.release-please-manifest.json'
     - '.github/workflows/*.yml'
+  actionSources:
+    - 'action.yml'
+    - 'action/**/*'
+    - 'mise.toml'
+    - 'mise.lock'
 
 workspace:
   inheritedTasks:
@@ -50,7 +55,7 @@ tasks:
       cache: false
 
   lint:
-    command: 'golangci-lint run --config .golangci.yml ./... --show-stats=false'
+    command: 'golangci-lint run --config .golangci.yml ./cmd/... ./internal/... --show-stats=false'
     inputs:
       - '@group(goSources)'
       - '@group(lintConfig)'
@@ -72,7 +77,7 @@ tasks:
       cache: false
 
   test:
-    command: 'go test ./...'
+    command: 'go test ./cmd/... ./internal/...'
     inputs:
       - '@group(goSources)'
     options:
@@ -85,11 +90,13 @@ tasks:
       - 'root:build'
       - 'root:test'
       - 'root:godoc'
+      - 'action:check'
       - 'docs:build'
     inputs:
       - '@group(goSources)'
       - '@group(lintConfig)'
       - '@group(releaseConfig)'
+      - '@group(actionSources)'
     options:
       cache: false
       runInCI: true

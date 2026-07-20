@@ -1,0 +1,87 @@
+name: sops-aws-sync
+description: Reconcile committed SOPS JSON with AWS Secrets Manager using a verified CLI release.
+author: meigma
+
+branding:
+  icon: refresh-cw
+  color: purple
+
+inputs:
+  mode:
+    description: Closed execution mode: plan or sync.
+    required: false
+    default: plan
+  fail-on-drift:
+    description: Fail plan mode when executable drift is found.
+    required: false
+    default: 'false'
+  source-root:
+    description: Repository-relative directory containing .sops.json files.
+    required: false
+    default: secrets
+  secret-prefix:
+    description: Required AWS Secrets Manager name prefix and ownership boundary.
+    required: true
+  revision:
+    description: Exact committed revision; defaults to the current workflow SHA.
+    required: false
+  repository-id:
+    description: Stable owner/repository identity; defaults to the workflow repository.
+    required: false
+  aws-region:
+    description: Optional AWS SDK Region override.
+    required: false
+  recovery-window-days:
+    description: Optional Secrets Manager recovery period from 7 through 30 days.
+    required: false
+  run-timeout:
+    description: Optional Go duration for the complete CLI run.
+    required: false
+  operation-timeout:
+    description: Optional Go duration for each AWS operation.
+    required: false
+  verification-timeout:
+    description: Optional Go duration for convergence verification.
+    required: false
+  allow-empty:
+    description: Authorize an empty desired snapshot to schedule managed deletions.
+    required: false
+    default: 'false'
+  show-resource-names:
+    description: Explicitly allow resource identifiers in CLI logs.
+    required: false
+    default: 'false'
+  cli-version:
+    description: Optional exact semantic CLI version without a leading v.
+    required: false
+  github-token:
+    description: Optional token for private release and attestation API access.
+    required: false
+
+outputs:
+  status:
+    description: Stable CLI report status.
+  cli-version:
+    description: CLI version reported by the executed binary.
+  git-revision:
+    description: Exact Git revision reported by the CLI.
+  create-count:
+    description: Planned or applied create count.
+  update-count:
+    description: Planned or applied update count.
+  restore-count:
+    description: Planned or applied restore count.
+  scheduled-delete-count:
+    description: Planned or applied scheduled-deletion count.
+  unchanged-count:
+    description: Unchanged resource count.
+  conflict-count:
+    description: Conflict count.
+  verification-status:
+    description: Stable verification status.
+  redacted-report-path:
+    description: Temporary path to the redacted machine report.
+
+runs:
+  using: node24
+  main: action/dist/index.js

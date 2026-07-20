@@ -1,0 +1,137 @@
+language: 'typescript'
+layer: 'application'
+stack: 'frontend'
+
+project:
+  title: 'sops-aws-sync Action'
+  description: 'Thin verified GitHub Action adapter for the Go CLI.'
+  owner: 'meigma'
+  maintainers:
+    - 'meigma'
+
+toolchains:
+  default: 'system'
+
+fileGroups:
+  sources:
+    - 'src/**/*.ts'
+    - '__tests__/**/*.ts'
+    - 'script/**/*.mjs'
+    - '*.js'
+    - '*.mjs'
+    - '*.ts'
+    - '*.json'
+    - '*.yml'
+    - '.prettierignore'
+    - '.prettierrc.yml'
+
+workspace:
+  inheritedTasks:
+    include: []
+
+tasks:
+  install:
+    command: 'npm ci'
+    inputs:
+      - 'package.json'
+      - 'package-lock.json'
+    outputs:
+      - 'node_modules/.package-lock.json'
+    options:
+      cache: false
+
+  format:
+    command: 'npm run format:check'
+    deps:
+      - 'action:install'
+    inputs:
+      - '@group(sources)'
+    options:
+      cache: false
+
+  lint:
+    command: 'npm run lint'
+    deps:
+      - 'action:install'
+    inputs:
+      - '@group(sources)'
+    options:
+      cache: false
+
+  typecheck:
+    command: 'npm run typecheck'
+    deps:
+      - 'action:install'
+    inputs:
+      - '@group(sources)'
+    options:
+      cache: false
+
+  test:
+    command: 'npm run test'
+    deps:
+      - 'action:install'
+      - 'root:build'
+    inputs:
+      - '@group(sources)'
+    options:
+      cache: false
+
+  coverage:
+    command: 'npm run test:coverage'
+    deps:
+      - 'action:install'
+      - 'root:build'
+    inputs:
+      - '@group(sources)'
+    options:
+      cache: false
+
+  dependencies:
+    command: 'npm run check:dependencies'
+    deps:
+      - 'action:install'
+    inputs:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'script/check-dependencies.mjs'
+    options:
+      cache: false
+
+  bundle:
+    command: 'npm run package'
+    deps:
+      - 'action:install'
+    inputs:
+      - '@group(sources)'
+    outputs:
+      - 'dist/index.js'
+      - 'dist/index.js.map'
+    options:
+      cache: false
+
+  check-dist:
+    command: 'git diff --exit-code -- dist'
+    deps:
+      - 'action:bundle'
+    inputs:
+      - '@group(sources)'
+      - 'dist/index.js'
+      - 'dist/index.js.map'
+    options:
+      cache: false
+
+  check:
+    deps:
+      - 'action:format'
+      - 'action:lint'
+      - 'action:typecheck'
+      - 'action:test'
+      - 'action:coverage'
+      - 'action:dependencies'
+      - 'action:check-dist'
+    inputs:
+      - '@group(sources)'
+    options:
+      cache: false
+      runInCI: true

@@ -11,6 +11,7 @@
 # Environment
 .env
 .env.*
+!action/.env.example
 .envrc
 
 # mise local overrides (per-developer tool/env overrides; never committed).
@@ -47,6 +48,8 @@ htmlcov/
 .coverage
 .coverage.*
 dist/
+!action/dist/
+!action/dist/**
 build/
 site/
 *.egg-info/
