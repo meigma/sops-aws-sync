@@ -4,3 +4,4 @@
 |-----|------------|-------|--------|---------|
 | 001 | 2026-07-20 | CLI and GitHub Action design and V1 plan | complete | Produced the authoritative V1 design and its five-phase delivery plan; implementation remains unstarted. |
 | 002 | 2026-07-20 | Phase 1 committed-source proof | complete | Proved the committed SOPS source-to-domain path and closed accepted draft PR #7 unmerged; Phase 2 is next. |
+| 003 | 2026-07-20 | Phase 2 durable AWS vertical slice | in-progress | Review the authoritative design and plan, then implement and verify the first durable AWS reconciliation slice. |
