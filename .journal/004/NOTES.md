@@ -27,3 +27,8 @@ Exact-head verification passed:
 - hosted CI (1m03s), GitHub Pages (18s), and Kusari Inspector (25s) all passed on the exact head; release dry-run and Pages deployment skipped as expected
 
 The first repeated live run exposed shared-scope sandbox pollution from prior scheduled test secrets. The test was corrected to derive a unique secret prefix and ownership scope per run, then all exact-head gates and the live test passed. Phase 3 is now paused at the plan's required PR review boundary; do not merge without user approval.
+
+## 2026-07-20 16:12 — P1 reconciliation review fixes verified
+Addressed both P1 review findings in commit `d0ecee141ac89d8e54ed5b587bdde6ff6b5e0d35`. Reconciliation now retains every affected target across plan rebuilds and directly observes affected names during verification, including scheduled deletions omitted by a later `ListSecrets` response. It also records successfully applied restores independently of replacement plans; if a later precondition rebuild introduces operations beyond those restored names, the cycle stops with verification failure before applying unrelated work.
+
+Added regressions that failed on the prior head and pass on the fix: omitted deletion discovery cannot falsely converge, and restore bookkeeping survives a harmless rebuild without allowing unrelated updates. Exact-head verification passed with `go test -race ./...`, all eight `root:check` Moon tasks, and the opt-in genuine AWS lifecycle test through whzbox in `us-east-1`. Hosted CI (51s), GitHub Pages (22s), and Kusari Inspector (22s) passed; expected release and deployment jobs skipped. PR #9 remains open, cleanly mergeable, and deliberately unmerged at the review boundary.
