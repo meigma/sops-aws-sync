@@ -33,6 +33,7 @@ type fakeClient struct {
 	createErr      error
 	putInput       *awssm.PutSecretValueInput
 	putErr         error
+	getCalls       int
 }
 
 // DescribeSecret returns configured direct metadata evidence.
@@ -50,6 +51,7 @@ func (client *fakeClient) GetSecretValue(
 	_ *awssm.GetSecretValueInput,
 	_ ...func(*awssm.Options),
 ) (*awssm.GetSecretValueOutput, error) {
+	client.getCalls++
 	return client.getOutput, client.getErr
 }
 
@@ -98,13 +100,70 @@ func TestObserveNormalizesDirectOwnedString(t *testing.T) {
 	adapter, err := New(client, time.Second)
 	require.NoError(t, err)
 
-	evidence, err := adapter.Observe(context.Background(), desired.Name())
+	evidence, err := adapter.Observe(context.Background(), desired, scope)
 	require.NoError(t, err)
 	assert.True(t, evidence.Exists)
 	assert.True(t, evidence.StagingValid)
 	assert.Equal(t, "version-1", evidence.CurrentVersion)
 	assert.Len(t, evidence.ReservedTags, 3)
 	assert.Equal(t, domain.ObservedOwnedActiveString, domain.ClassifyDirect(desired, scope, evidence).Kind())
+}
+
+// TestObserveDoesNotReadPayloadBeforeMetadataOwnership proves conflicts remain metadata-only.
+func TestObserveDoesNotReadPayloadBeforeMetadataOwnership(t *testing.T) {
+	t.Parallel()
+
+	desired, scope := adapterDesired(t)
+	tests := []struct {
+		name   string
+		mutate func(*awssm.DescribeSecretOutput)
+		want   domain.ObservedKind
+	}{
+		{
+			name: "foreign ownership",
+			mutate: func(output *awssm.DescribeSecretOutput) {
+				output.Tags = nil
+			},
+			want: domain.ObservedForeign,
+		},
+		{
+			name: "service owned",
+			mutate: func(output *awssm.DescribeSecretOutput) {
+				output.OwningService = aws.String("rds")
+			},
+			want: domain.ObservedConflict,
+		},
+		{
+			name: "rotation enabled",
+			mutate: func(output *awssm.DescribeSecretOutput) {
+				output.RotationEnabled = aws.Bool(true)
+			},
+			want: domain.ObservedConflict,
+		},
+		{
+			name: "replicated",
+			mutate: func(output *awssm.DescribeSecretOutput) {
+				output.ReplicationStatus = []types.ReplicationStatusType{{Region: aws.String("us-west-2")}}
+			},
+			want: domain.ObservedConflict,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			description := ownedDescription(desired, scope)
+			test.mutate(description)
+			client := &fakeClient{describeOutput: description, getErr: errors.New("payload access denied sentinel")}
+			adapter, err := New(client, time.Second)
+			require.NoError(t, err)
+
+			evidence, err := adapter.Observe(context.Background(), desired, scope)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, domain.ClassifyDirect(desired, scope, evidence).Kind())
+			assert.Zero(t, client.getCalls)
+		})
+	}
 }
 
 // TestCreateAndUpdateUseCanonicalValuesTokensAndReservedTags proves mutation request shape.
@@ -233,4 +292,16 @@ func adapterDesired(t *testing.T) (domain.DesiredSecret, domain.ScopeIdentity) {
 	require.NoError(t, err)
 
 	return domain.NewDesiredSecret(name, source, value, revision), scope
+}
+
+// ownedDescription returns metadata that requires one current payload comparison.
+func ownedDescription(desired domain.DesiredSecret, scope domain.ScopeIdentity) *awssm.DescribeSecretOutput {
+	return &awssm.DescribeSecretOutput{
+		Tags: []types.Tag{
+			{Key: aws.String(domain.ManagedByTagKey), Value: aws.String(domain.ManagedByTagValue)},
+			{Key: aws.String(domain.ScopeTagKey), Value: aws.String(scope.Value())},
+			{Key: aws.String(domain.SourceTagKey), Value: aws.String(desired.Source().Value())},
+		},
+		VersionIdsToStages: map[string][]string{"version-1": {awsCurrent}},
+	}
 }

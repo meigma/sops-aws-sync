@@ -106,12 +106,59 @@ func TestUnknownConfigurationKeyFailsBeforeRunner(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath,
 		[]byte("repository-id: meigma/example\nsecret-prefix: /acme/payments\nunknown-key: true\n"), 0o600))
 	runner := &recordingRunner{planReport: successfulReport()}
-	root := NewRootCommand(Options{Out: ioBuffer(), Viper: viper.New(), Runner: runner, NewLogger: testLogger})
+	var stderr bytes.Buffer
+	root := NewRootCommand(Options{
+		Out: ioBuffer(), Err: &stderr, Viper: viper.New(), Runner: runner, NewLogger: testLogger,
+	})
 	root.SetArgs([]string{"plan", "--config", configPath})
 
 	err := root.ExecuteContext(context.Background())
 	assert.Equal(t, 3, ExitCode(err))
 	assert.Zero(t, runner.calls)
+	assert.Contains(t, stderr.String(), "configuration contains unknown keys or invalid value types")
+}
+
+// TestInvalidConfigurationWritesSafeDiagnostic proves exit 3 remains actionable and non-disclosing.
+func TestInvalidConfigurationWritesSafeDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		arguments []string
+		want      string
+	}{
+		{
+			name:      "missing required ownership flags",
+			arguments: []string{"plan"},
+			want:      "configuration error: repository-id is required",
+		},
+		{
+			name: "invalid duration",
+			arguments: []string{
+				"plan", "--repository-id", "meigma/example", "--secret-prefix", "/acme/payments",
+				"--operation-timeout", "phase2-secret-sentinel",
+			},
+			want: "configuration error: operation-timeout is invalid",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			root := NewRootCommand(Options{
+				Out: &stdout, Err: &stderr, Viper: viper.New(), Runner: &recordingRunner{}, NewLogger: testLogger,
+			})
+			root.SetArgs(test.arguments)
+
+			err := root.ExecuteContext(context.Background())
+			assert.Equal(t, 3, ExitCode(err))
+			assert.Empty(t, stdout.String())
+			assert.Contains(t, stderr.String(), test.want)
+			assert.NotContains(t, stderr.String(), "phase2-secret-sentinel")
+		})
+	}
 }
 
 // TestDetailedPlanExitAndReportFile prove drift status 2 and safe machine persistence.

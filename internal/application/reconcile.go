@@ -13,13 +13,19 @@ import (
 )
 
 const (
-	statusConverged          = "converged"
-	verificationPollInterval = 250 * time.Millisecond
+	statusConverged            = "converged"
+	verificationNotRun         = "not-run"
+	verificationPollInterval   = 250 * time.Millisecond
+	maximumPreconditionReplans = 1
 )
 
 // SecretsManager is the direct observation and Phase 2 mutation port.
 type SecretsManager interface {
-	Observe(ctx context.Context, name domain.SecretName) (domain.ObservedEvidence, error)
+	Observe(
+		ctx context.Context,
+		desired domain.DesiredSecret,
+		scope domain.ScopeIdentity,
+	) (domain.ObservedEvidence, error)
 	Create(ctx context.Context, desired domain.DesiredSecret, scope domain.ScopeIdentity, token string) error
 	Update(ctx context.Context, desired domain.DesiredSecret, token string) error
 }
@@ -201,8 +207,7 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (Report,
 	}
 	for index, operation := range plan.Operations() {
 		if err := service.applyOperation(ctx, scope, operation, index, input.ShowResourceNames); err != nil {
-			report.Status = "apply-failed"
-			report.Verification = "not-run"
+			report.Status, report.Verification = applyOutcomeReport(err)
 			report.DurationMilliseconds = time.Since(started).Milliseconds()
 			return report, err
 		}
@@ -264,7 +269,7 @@ func (service *Service) observeAll(
 ) ([]domain.ObservedSlot, error) {
 	observed := make([]domain.ObservedSlot, 0, len(desired))
 	for _, secret := range desired {
-		evidence, err := service.secrets.Observe(ctx, secret.Name())
+		evidence, err := service.secrets.Observe(ctx, secret, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -282,21 +287,11 @@ func (service *Service) applyOperation(
 	index int,
 	showName bool,
 ) error {
-	current, err := service.observeOne(ctx, scope, operation.Desired())
-	if err != nil {
-		return service.classifyApplyError(ctx, err)
+	prepared, executable, err := service.prepareOperation(ctx, scope, operation)
+	if err != nil || !executable {
+		return err
 	}
-	switch domain.CheckPrecondition(operation, current) {
-	case domain.TransitionSucceeded:
-		return nil
-	case domain.TransitionConflict:
-		return NewOutcomeError(OutcomeConflict)
-	case domain.TransitionReplan:
-		return NewOutcomeError(OutcomeVerification)
-	case domain.TransitionApply:
-	case domain.TransitionRetrySameToken:
-		return NewOutcomeError(OutcomeApplyFailed)
-	}
+	operation = prepared
 	token, err := service.tokens.NewToken()
 	if err != nil {
 		return NewOutcomeError(OutcomeApplyFailed)
@@ -313,6 +308,54 @@ func (service *Service) applyOperation(
 	if !errors.As(err, &ambiguous) || !ambiguous.Ambiguous() {
 		return service.classifyApplyError(ctx, err)
 	}
+
+	return service.resolveAmbiguous(ctx, scope, operation, token)
+}
+
+// prepareOperation permits one safe same-resource replan before allocating a token.
+func (service *Service) prepareOperation(
+	ctx context.Context,
+	scope domain.ScopeIdentity,
+	operation domain.Operation,
+) (domain.Operation, bool, error) {
+	for replans := 0; ; replans++ {
+		current, err := service.observeOne(ctx, scope, operation.Desired())
+		if err != nil {
+			return domain.Operation{}, false, service.classifyApplyError(ctx, err)
+		}
+		switch domain.CheckPrecondition(operation, current) {
+		case domain.TransitionSucceeded:
+			return domain.Operation{}, false, nil
+		case domain.TransitionConflict:
+			return domain.Operation{}, false, NewOutcomeError(OutcomeConflict)
+		case domain.TransitionReplan:
+			if replans >= maximumPreconditionReplans {
+				return domain.Operation{}, false, NewOutcomeError(OutcomeVerification)
+			}
+			replanned, executable, replanErr := replanOne(operation.Desired(), current)
+			if replanErr != nil {
+				return domain.Operation{}, false, replanErr
+			}
+			if !executable {
+				return domain.Operation{}, false, nil
+			}
+			operation = replanned
+			continue
+		case domain.TransitionApply:
+			return operation, true, nil
+		case domain.TransitionRetrySameToken:
+			return domain.Operation{}, false, NewOutcomeError(OutcomeApplyFailed)
+		}
+	}
+}
+
+// resolveAmbiguous re-observes one uncertain mutation before a same-token retry.
+func (service *Service) resolveAmbiguous(
+	ctx context.Context,
+	scope domain.ScopeIdentity,
+	operation domain.Operation,
+	token string,
+) error {
 	current, observeErr := service.observeOne(ctx, scope, operation.Desired())
 	if observeErr != nil {
 		return service.classifyApplyError(ctx, observeErr)
@@ -336,6 +379,29 @@ func (service *Service) applyOperation(
 	}
 
 	return NewOutcomeError(OutcomeApplyFailed)
+}
+
+// replanOne derives one replacement operation from newly observed safe state.
+func replanOne(desired domain.DesiredSecret, current domain.ObservedSlot) (domain.Operation, bool, error) {
+	plan, err := domain.BuildPlan([]domain.DesiredSecret{desired}, []domain.ObservedSlot{current})
+	if err != nil {
+		return domain.Operation{}, false, NewOutcomeError(OutcomeApplyFailed)
+	}
+	if len(plan.Conflicts()) > 0 {
+		return domain.Operation{}, false, NewOutcomeError(OutcomeConflict)
+	}
+	if err := plan.ValidatePhaseTwo(); err != nil {
+		return domain.Operation{}, false, NewOutcomeError(OutcomeConflict)
+	}
+	operations := plan.Operations()
+	if len(operations) == 0 {
+		return domain.Operation{}, false, nil
+	}
+	if len(operations) != 1 {
+		return domain.Operation{}, false, NewOutcomeError(OutcomeApplyFailed)
+	}
+
+	return operations[0], true, nil
 }
 
 // mutate dispatches only the create and update operations supported in Phase 2.
@@ -363,7 +429,7 @@ func (service *Service) observeOne(
 	scope domain.ScopeIdentity,
 	desired domain.DesiredSecret,
 ) (domain.ObservedSlot, error) {
-	evidence, err := service.secrets.Observe(ctx, desired.Name())
+	evidence, err := service.secrets.Observe(ctx, desired, scope)
 	if err != nil {
 		return domain.ObservedSlot{}, err
 	}
@@ -411,7 +477,7 @@ func (service *Service) newReport(
 		GitRevision:          revision.Value(),
 		Status:               string(OutcomeInvalid),
 		Counts:               plan.Counts(),
-		Verification:         "not-run",
+		Verification:         verificationNotRun,
 		DurationMilliseconds: time.Since(started).Milliseconds(),
 	}
 }
@@ -448,6 +514,28 @@ func preflightStatus(err error) string {
 	}
 
 	return string(OutcomeInvalid)
+}
+
+// applyOutcomeReport maps typed apply failures to consistent machine status fields.
+func applyOutcomeReport(err error) (string, string) {
+	var outcome *OutcomeError
+	if !errors.As(err, &outcome) {
+		return string(OutcomeApplyFailed), verificationNotRun
+	}
+	switch outcome.Kind() {
+	case OutcomeConflict:
+		return string(OutcomeConflict), verificationNotRun
+	case OutcomeInterrupted:
+		return string(OutcomeInterrupted), verificationNotRun
+	case OutcomeVerification:
+		return "verification-failed", "failed"
+	case OutcomeInvalid:
+		return string(OutcomeInvalid), verificationNotRun
+	case OutcomeApplyFailed:
+		return string(OutcomeApplyFailed), verificationNotRun
+	}
+
+	return string(OutcomeApplyFailed), verificationNotRun
 }
 
 // classifyApplyError maps canceled and unknown writes to stable result classes.

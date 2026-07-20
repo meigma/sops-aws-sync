@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,6 +47,32 @@ func TestReaderRejectsMatchingSymlink(t *testing.T) {
 	_, err = worktree.Add("secrets/value.sops.json")
 	require.NoError(t, err)
 	revision, err := worktree.Commit("test: add symlink", &git.CommitOptions{Author: testSignature()})
+	require.NoError(t, err)
+	reader, err := gitrepo.NewReader(repositoryPath, 1024)
+	require.NoError(t, err)
+
+	_, err = reader.Load(context.Background(), revision.String(), "secrets")
+	require.ErrorContains(t, err, "not a regular Git blob")
+}
+
+// TestReaderRejectsMatchingSubmodule proves gitlinks cannot silently remove desired state.
+func TestReaderRejectsMatchingSubmodule(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := t.TempDir()
+	repository, err := git.PlainInit(repositoryPath, false)
+	require.NoError(t, err)
+	require.NoError(t, repository.Storer.SetIndex(&index.Index{
+		Version: 2,
+		Entries: []*index.Entry{{
+			Name: "secrets/value.sops.json",
+			Hash: plumbing.NewHash("0123456789abcdef0123456789abcdef01234567"),
+			Mode: filemode.Submodule,
+		}},
+	}))
+	worktree, err := repository.Worktree()
+	require.NoError(t, err)
+	revision, err := worktree.Commit("test: add submodule", &git.CommitOptions{Author: testSignature()})
 	require.NoError(t, err)
 	reader, err := gitrepo.NewReader(repositoryPath, 1024)
 	require.NoError(t, err)

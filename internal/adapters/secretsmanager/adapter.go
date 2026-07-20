@@ -115,8 +115,13 @@ func Load(ctx context.Context, configuration LoadOptions) (*Adapter, error) {
 	return New(awssm.NewFromConfig(awsConfiguration), configuration.OperationTimeout)
 }
 
-// Observe directly describes one name and loads its current payload when accessible.
-func (adapter *Adapter) Observe(ctx context.Context, name domain.SecretName) (domain.ObservedEvidence, error) {
+// Observe classifies direct metadata before loading an owned current payload.
+func (adapter *Adapter) Observe(
+	ctx context.Context,
+	desired domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+) (domain.ObservedEvidence, error) {
+	name := desired.Name()
 	callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
 	defer cancel()
 	description, err := adapter.client.DescribeSecret(
@@ -131,7 +136,7 @@ func (adapter *Adapter) Observe(ctx context.Context, name domain.SecretName) (do
 		return domain.ObservedEvidence{}, classifyError("describe", err, false)
 	}
 	evidence := evidenceFromDescription(description)
-	if evidence.ScheduledForDeletion || !evidence.StagingValid || evidence.CurrentVersion == "" {
+	if !domain.CurrentPayloadRequired(desired, scope, evidence) {
 		return evidence, nil
 	}
 	callContext, cancel = context.WithTimeout(ctx, adapter.operationTimeout)

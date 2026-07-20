@@ -72,6 +72,43 @@ func TestClassifyDirectCoversDesiredNameSafetyStates(t *testing.T) {
 	}
 }
 
+// TestCurrentPayloadRequiredAllowsOnlyOwnedSafeMetadata proves payload reads fail closed.
+func TestCurrentPayloadRequiredAllowsOnlyOwnedSafeMetadata(t *testing.T) {
+	t.Parallel()
+
+	desired := newDesiredSecret(t, "/acme/payments/database", `{"password":"sentinel"}`)
+	scope := newScope(t)
+	owned := ownedEvidence(scope, desired, nil, false)
+	tests := []struct {
+		name     string
+		evidence domain.ObservedEvidence
+		want     bool
+	}{
+		{name: "owned active current", evidence: owned, want: true},
+		{name: "missing", evidence: domain.ObservedEvidence{}, want: false},
+		{name: "foreign", evidence: domain.ObservedEvidence{Exists: true}, want: false},
+		{name: "scheduled", evidence: scheduledEvidence(scope, desired), want: false},
+		{name: "service owned", evidence: constrainedEvidence(scope, desired, "service"), want: false},
+		{name: "rotation enabled", evidence: constrainedEvidence(scope, desired, "rotation"), want: false},
+		{name: "replicated", evidence: constrainedEvidence(scope, desired, "replica"), want: false},
+		{name: "missing current", evidence: evidenceWithNoCurrent(owned), want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, test.want, domain.CurrentPayloadRequired(desired, scope, test.evidence))
+		})
+	}
+}
+
+// evidenceWithNoCurrent removes the unique AWSCURRENT metadata from owned evidence.
+func evidenceWithNoCurrent(evidence domain.ObservedEvidence) domain.ObservedEvidence {
+	evidence.CurrentVersion = ""
+
+	return evidence
+}
+
 // TestBuildPlanAndTransitions proves deterministic create, update, no-op, restore, and preconditions.
 func TestBuildPlanAndTransitions(t *testing.T) {
 	t.Parallel()

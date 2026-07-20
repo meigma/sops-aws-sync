@@ -83,39 +83,13 @@ func ClassifyDirect(
 	scope ScopeIdentity,
 	evidence ObservedEvidence,
 ) ObservedSlot {
+	metadata, terminal := classifyMetadata(desired, scope, evidence)
+	if terminal {
+		return metadata
+	}
+
 	name := desired.Name()
-	if !evidence.Exists {
-		return newObservedSlot(name, ObservedMissing, SourceIdentity{}, "", "", "")
-	}
-	if evidence.ReservedTags == nil {
-		return newObservedSlot(name, ObservedForeign, SourceIdentity{}, "", evidence.CurrentVersion, "ownership")
-	}
-	if evidence.ReservedTags[ManagedByTagKey] != ManagedByTagValue ||
-		evidence.ReservedTags[ScopeTagKey] != scope.Value() {
-		return newObservedSlot(name, ObservedForeign, SourceIdentity{}, "", evidence.CurrentVersion, "ownership")
-	}
-	source, err := ParseSourceIdentity(evidence.ReservedTags[SourceTagKey])
-	if err != nil {
-		return newObservedSlot(name, ObservedInvalid, SourceIdentity{}, "", evidence.CurrentVersion, "source-tag")
-	}
-	if source != desired.Source() {
-		return newObservedSlot(name, ObservedForeign, source, "", evidence.CurrentVersion, "source")
-	}
-	if strings.TrimSpace(evidence.OwningService) != "" {
-		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "service-owned")
-	}
-	if evidence.RotationEnabled || evidence.RotationInProgress {
-		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "rotation")
-	}
-	if evidence.HasReplicas {
-		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "replication")
-	}
-	if evidence.ScheduledForDeletion {
-		return newObservedSlot(name, ObservedOwnedScheduled, source, "", evidence.CurrentVersion, "")
-	}
-	if !evidence.StagingValid {
-		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "staging")
-	}
+	source := desired.Source()
 	if evidence.SecretBinary {
 		if evidence.SecretString != nil {
 			return newObservedSlot(name, ObservedInvalid, source, "", evidence.CurrentVersion, "payload")
@@ -127,6 +101,63 @@ func ClassifyDirect(
 	}
 
 	return newObservedSlot(name, ObservedOwnedActiveString, source, *evidence.SecretString, evidence.CurrentVersion, "")
+}
+
+// CurrentPayloadRequired reports whether metadata proves a payload read is owned and safe.
+func CurrentPayloadRequired(
+	desired DesiredSecret,
+	scope ScopeIdentity,
+	evidence ObservedEvidence,
+) bool {
+	_, terminal := classifyMetadata(desired, scope, evidence)
+
+	return !terminal
+}
+
+// classifyMetadata returns every state decidable without loading AWSCURRENT.
+func classifyMetadata(
+	desired DesiredSecret,
+	scope ScopeIdentity,
+	evidence ObservedEvidence,
+) (ObservedSlot, bool) {
+	name := desired.Name()
+	if !evidence.Exists {
+		return newObservedSlot(name, ObservedMissing, SourceIdentity{}, "", "", ""), true
+	}
+	if evidence.ReservedTags == nil {
+		return newObservedSlot(name, ObservedForeign, SourceIdentity{}, "", evidence.CurrentVersion, "ownership"), true
+	}
+	if evidence.ReservedTags[ManagedByTagKey] != ManagedByTagValue ||
+		evidence.ReservedTags[ScopeTagKey] != scope.Value() {
+		return newObservedSlot(name, ObservedForeign, SourceIdentity{}, "", evidence.CurrentVersion, "ownership"), true
+	}
+	source, err := ParseSourceIdentity(evidence.ReservedTags[SourceTagKey])
+	if err != nil {
+		return newObservedSlot(name, ObservedInvalid, SourceIdentity{}, "", evidence.CurrentVersion, "source-tag"), true
+	}
+	if source != desired.Source() {
+		return newObservedSlot(name, ObservedForeign, source, "", evidence.CurrentVersion, "source"), true
+	}
+	if strings.TrimSpace(evidence.OwningService) != "" {
+		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "service-owned"), true
+	}
+	if evidence.RotationEnabled || evidence.RotationInProgress {
+		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "rotation"), true
+	}
+	if evidence.HasReplicas {
+		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "replication"), true
+	}
+	if evidence.ScheduledForDeletion {
+		return newObservedSlot(name, ObservedOwnedScheduled, source, "", evidence.CurrentVersion, ""), true
+	}
+	if !evidence.StagingValid {
+		return newObservedSlot(name, ObservedConflict, source, "", evidence.CurrentVersion, "staging"), true
+	}
+	if evidence.CurrentVersion == "" {
+		return newObservedSlot(name, ObservedOwnedWithoutCurrent, source, "", evidence.CurrentVersion, ""), true
+	}
+
+	return ObservedSlot{}, false
 }
 
 // newObservedSlot constructs a slot and computes a secret-safe state fingerprint.

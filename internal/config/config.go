@@ -146,7 +146,7 @@ func BindEnvironment(vp *viper.Viper) error {
 func Load(vp *viper.Viper) (Config, error) {
 	var raw rawConfig
 	if err := vp.UnmarshalExact(&raw); err != nil {
-		return Config{}, fmt.Errorf("decode configuration: %w", err)
+		return Config{}, errors.New("configuration contains unknown keys or invalid value types")
 	}
 	return raw.validate()
 }

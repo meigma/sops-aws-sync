@@ -86,14 +86,24 @@ type memorySecrets struct {
 	ambiguousUpdate bool
 	observeErr      error
 	observeCalls    int
+	observations    []domain.ObservedEvidence
+	observationErrs []error
 }
 
 // Observe returns the current direct desired-name evidence.
 func (secrets *memorySecrets) Observe(
 	_ context.Context,
-	_ domain.SecretName,
+	_ domain.DesiredSecret,
+	_ domain.ScopeIdentity,
 ) (domain.ObservedEvidence, error) {
+	index := secrets.observeCalls
 	secrets.observeCalls++
+	if index < len(secrets.observationErrs) && secrets.observationErrs[index] != nil {
+		return domain.ObservedEvidence{}, secrets.observationErrs[index]
+	}
+	if index < len(secrets.observations) {
+		secrets.evidence = secrets.observations[index]
+	}
 	return secrets.evidence, secrets.observeErr
 }
 
@@ -239,6 +249,89 @@ func TestSyncResolvesAmbiguousUpdateWithoutBlindRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, testContext.secrets.updateCalls)
 	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncReplansCreateAsUpdateAfterHarmlessDrift proves one bounded precondition replan.
+func TestSyncReplansCreateAsUpdateAfterHarmlessDrift(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	old := ownedApplicationEvidenceWithValue(
+		testContext.desired,
+		testContext.secrets.scope,
+		`{"password":"old"}`,
+	)
+	testContext.secrets.observations = []domain.ObservedEvidence{{}, old}
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	require.NoError(t, err)
+	assert.Zero(t, testContext.secrets.createCalls)
+	assert.Equal(t, 1, testContext.secrets.updateCalls)
+	assert.Equal(t, "converged", report.Status)
+	require.Len(t, testContext.secrets.tokens, 1)
+}
+
+// TestSyncBoundsRepeatedPreconditionReplans proves concurrent churn cannot loop indefinitely.
+func TestSyncBoundsRepeatedPreconditionReplans(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	old := ownedApplicationEvidenceWithValue(
+		testContext.desired,
+		testContext.secrets.scope,
+		`{"password":"old"}`,
+	)
+	testContext.secrets.observations = []domain.ObservedEvidence{{}, old, {}}
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeVerification, outcome.Kind())
+	assert.Equal(t, "verification-failed", report.Status)
+	assert.Equal(t, "failed", report.Verification)
+	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
+}
+
+// TestSyncApplyOutcomeMatchesReport proves machine status agrees with the stable exit class.
+func TestSyncApplyOutcomeMatchesReport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		observations     []domain.ObservedEvidence
+		observationErrs  []error
+		wantKind         application.OutcomeKind
+		wantStatus       string
+		wantVerification string
+	}{
+		{
+			name: "ownership conflict",
+			observations: []domain.ObservedEvidence{
+				{},
+				{Exists: true},
+			},
+			wantKind: application.OutcomeConflict, wantStatus: "conflict", wantVerification: "not-run",
+		},
+		{
+			name:            "interruption",
+			observationErrs: []error{nil, context.Canceled},
+			wantKind:        application.OutcomeInterrupted, wantStatus: "interrupted", wantVerification: "not-run",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			testContext := newAppTestContext(t)
+			testContext.secrets.observations = test.observations
+			testContext.secrets.observationErrs = test.observationErrs
+			report, err := testContext.service.Sync(context.Background(), testContext.input)
+			var outcome *application.OutcomeError
+			require.ErrorAs(t, err, &outcome)
+			assert.Equal(t, test.wantKind, outcome.Kind())
+			assert.Equal(t, test.wantStatus, report.Status)
+			assert.Equal(t, test.wantVerification, report.Verification)
+			assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
+		})
+	}
 }
 
 // TestSyncCancellationStopsBeforeMutation proves parent interruption maps to exit 130 behavior.

@@ -109,6 +109,7 @@ func NewRootCommand(options Options) *cobra.Command {
 				return nil
 			}
 			if err := initializeConfig(command, options.Viper, configPath); err != nil {
+				writeConfigurationDiagnostic(command.ErrOrStderr(), err)
 				return &commandError{code: exitInvalid}
 			}
 			return nil
@@ -121,7 +122,8 @@ func NewRootCommand(options Options) *cobra.Command {
 	root.SetIn(options.In)
 	root.SetOut(options.Out)
 	root.SetErr(options.Err)
-	root.SetFlagErrorFunc(func(_ *cobra.Command, _ error) error {
+	root.SetFlagErrorFunc(func(command *cobra.Command, _ error) error {
+		_, _ = io.WriteString(command.ErrOrStderr(), "invalid command-line flags; use --help for supported values\n")
 		return &commandError{code: exitInvalid}
 	})
 	addRuntimeFlags(root.PersistentFlags(), &configPath)
@@ -217,10 +219,16 @@ func newSyncCommand(options Options) *cobra.Command {
 // executeUseCase validates typed configuration, runs one use case, and persists its report.
 func executeUseCase(command *cobra.Command, options Options, syncMode, detailedExitCode bool) error {
 	runtime, err := config.Load(options.Viper)
-	if err != nil || options.Runner == nil {
+	if err != nil {
+		writeConfigurationDiagnostic(command.ErrOrStderr(), err)
+		return &commandError{code: exitInvalid}
+	}
+	if options.Runner == nil {
+		_, _ = io.WriteString(command.ErrOrStderr(), "command execution is unavailable\n")
 		return &commandError{code: exitInvalid}
 	}
 	if options.NewLogger == nil {
+		_, _ = io.WriteString(command.ErrOrStderr(), "logging initialization is unavailable\n")
 		return &commandError{code: exitInvalid}
 	}
 	logger, err := options.NewLogger(options.Out, runtime.LogLevel, runtime.LogFormat)
@@ -287,12 +295,17 @@ func initializeConfig(command *cobra.Command, vp *viper.Viper, configPath string
 	if configPath != "" {
 		vp.SetConfigFile(configPath)
 		if err := vp.ReadInConfig(); err != nil {
-			return fmt.Errorf("read configuration file: %w", err)
+			return errors.New("configuration file could not be read")
 		}
 	}
 	_, err := config.Load(vp)
 
 	return err
+}
+
+// writeConfigurationDiagnostic emits a safe validation reason without rejected values.
+func writeConfigurationDiagnostic(output io.Writer, err error) {
+	_, _ = fmt.Fprintf(output, "configuration error: %s\n", err.Error())
 }
 
 // bindRuntimeFlags binds only stable runtime keys and excludes Cobra-only controls.

@@ -88,42 +88,64 @@ func (reader *Reader) readDocuments(
 	sourceRoot string,
 ) ([]application.EncryptedDocument, error) {
 	documents := make([]application.EncryptedDocument, 0, 1)
-	err := tree.Files().ForEach(func(file *object.File) error {
+	walker := object.NewTreeWalker(tree, true, nil)
+	defer walker.Close()
+	for {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("read committed source: %w", err)
+			return nil, fmt.Errorf("read committed source: %w", err)
 		}
-		if !strings.HasSuffix(file.Name, sopsJSONSuffix) {
-			return nil
+		name, entry, err := walker.Next()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		if file.Mode != filemode.Regular {
-			return fmt.Errorf("selected source %q is not a regular Git blob", file.Name)
-		}
-		if file.Size > reader.maxEncryptedBytes {
-			return fmt.Errorf("selected source %q exceeds encrypted input limit", file.Name)
-		}
-		blobReader, err := file.Reader()
 		if err != nil {
-			return fmt.Errorf("open selected source %q: %w", file.Name, err)
+			return nil, fmt.Errorf("walk committed source: %w", err)
 		}
-		data, readErr := io.ReadAll(blobReader)
-		closeErr := blobReader.Close()
-		if readErr != nil {
-			return fmt.Errorf("read selected source %q: %w", file.Name, readErr)
+		if !strings.HasSuffix(name, sopsJSONSuffix) {
+			continue
 		}
-		if closeErr != nil {
-			return fmt.Errorf("close selected source %q: %w", file.Name, closeErr)
+		if entry.Mode != filemode.Regular {
+			return nil, fmt.Errorf("selected source %q is not a regular Git blob", name)
 		}
-		documentPath := file.Name
-		if sourceRoot != "." {
-			documentPath = path.Join(sourceRoot, file.Name)
+		document, err := reader.readDocument(tree, sourceRoot, name)
+		if err != nil {
+			return nil, err
 		}
-		documents = append(documents, application.EncryptedDocument{Path: documentPath, Data: data})
-
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walk committed source: %w", err)
+		documents = append(documents, document)
 	}
 
 	return documents, nil
+}
+
+// readDocument loads one already validated regular tree entry within its size limit.
+func (reader *Reader) readDocument(
+	tree *object.Tree,
+	sourceRoot,
+	name string,
+) (application.EncryptedDocument, error) {
+	file, err := tree.File(name)
+	if err != nil {
+		return application.EncryptedDocument{}, fmt.Errorf("load selected source %q: %w", name, err)
+	}
+	if file.Size > reader.maxEncryptedBytes {
+		return application.EncryptedDocument{}, fmt.Errorf("selected source %q exceeds encrypted input limit", name)
+	}
+	blobReader, err := file.Reader()
+	if err != nil {
+		return application.EncryptedDocument{}, fmt.Errorf("open selected source %q: %w", name, err)
+	}
+	data, readErr := io.ReadAll(blobReader)
+	closeErr := blobReader.Close()
+	if readErr != nil {
+		return application.EncryptedDocument{}, fmt.Errorf("read selected source %q: %w", name, readErr)
+	}
+	if closeErr != nil {
+		return application.EncryptedDocument{}, fmt.Errorf("close selected source %q: %w", name, closeErr)
+	}
+	documentPath := name
+	if sourceRoot != "." {
+		documentPath = path.Join(sourceRoot, name)
+	}
+
+	return application.EncryptedDocument{Path: documentPath, Data: data}, nil
 }
