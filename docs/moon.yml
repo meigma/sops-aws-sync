@@ -7,7 +7,7 @@ tags:
   - 'uv'
 
 project:
-  title: 'template-go docs'
+  title: 'sops-aws-sync docs'
   description: 'MkDocs documentation site for the Meigma Go repository template.'
   owner: 'meigma'
   maintainers:

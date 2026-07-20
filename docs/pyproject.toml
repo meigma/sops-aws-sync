@@ -1,5 +1,5 @@
 [project]
-name = "template-go-docs"
+name = "sops-aws-sync-docs"
 version = "0.0.0"
 description = "MkDocs documentation site for the Meigma Go repository template."
 requires-python = ">=3.14"
