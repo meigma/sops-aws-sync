@@ -179,7 +179,8 @@ func (adapter *Adapter) Observe(
 	if err != nil {
 		return domain.ObservedEvidence{}, classifyError("get-current", err, false)
 	}
-	if aws.ToString(current.VersionId) != evidence.CurrentVersion || !contains(current.VersionStages, awsCurrent) {
+	if aws.ToString(current.VersionId) != evidence.CurrentVersion ||
+		!slices.Contains(current.VersionStages, awsCurrent) {
 		evidence.StagingValid = false
 		return evidence, nil
 	}
@@ -201,10 +202,10 @@ func evidenceFromDescription(description *awssm.DescribeSecretOutput) domain.Obs
 	currentVersions := make([]string, 0, 1)
 	rotationInProgress := false
 	for version, stages := range description.VersionIdsToStages {
-		if contains(stages, awsCurrent) {
+		if slices.Contains(stages, awsCurrent) {
 			currentVersions = append(currentVersions, version)
 		}
-		if contains(stages, awsPending) {
+		if slices.Contains(stages, awsPending) {
 			rotationInProgress = true
 		}
 	}
@@ -338,9 +339,4 @@ func classifyError(operation string, err error, mutation bool) *SafeError {
 	failure.ambiguous = mutation && (timedOut || failure.canceled || networkFailure)
 
 	return failure
-}
-
-// contains reports whether a staging-label list contains one exact value.
-func contains(values []string, wanted string) bool {
-	return slices.Contains(values, wanted)
 }

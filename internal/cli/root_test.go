@@ -224,7 +224,7 @@ func TestApplicationOutcomeMapsToStableExitCode(t *testing.T) {
 // successfulReport returns one converged secret-free test report.
 func successfulReport() application.Report {
 	return application.Report{
-		SchemaVersion: "sops-aws-sync/report/v1", ToolVersion: "test",
+		SchemaVersion: application.ReportSchemaVersion, ToolVersion: "test",
 		GitRevision: "0123456789abcdef0123456789abcdef01234567", Status: "converged",
 		Counts: domain.Counts{Unchanged: 1}, Verification: "converged",
 	}

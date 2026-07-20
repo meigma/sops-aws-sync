@@ -86,6 +86,7 @@ type memorySecrets struct {
 	ambiguousUpdate bool
 	observeErr      error
 	observeCalls    int
+	observeDelay    time.Duration
 	observations    []domain.ObservedEvidence
 	observationErrs []error
 }
@@ -150,6 +151,9 @@ func (secrets *memorySecrets) Observe(
 	_ domain.DesiredSecret,
 	_ domain.ScopeIdentity,
 ) (domain.ObservedEvidence, error) {
+	if secrets.observeDelay > 0 {
+		time.Sleep(secrets.observeDelay)
+	}
 	index := secrets.observeCalls
 	secrets.observeCalls++
 	if index < len(secrets.observationErrs) && secrets.observationErrs[index] != nil {
@@ -427,12 +431,15 @@ func TestSyncConflictPerformsNoMutation(t *testing.T) {
 	t.Parallel()
 
 	testContext := newAppTestContext(t)
+	testContext.secrets.observeDelay = 5 * time.Millisecond
 	testContext.secrets.evidence = domain.ObservedEvidence{Exists: true}
 	report, err := testContext.service.Sync(context.Background(), testContext.input)
 	var outcome *application.OutcomeError
 	require.ErrorAs(t, err, &outcome)
 	assert.Equal(t, application.OutcomeConflict, outcome.Kind())
 	assert.Equal(t, "conflict", report.Status)
+	assert.Equal(t, "not-run", report.Verification)
+	assert.GreaterOrEqual(t, report.DurationMilliseconds, int64(5))
 	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
 }
 

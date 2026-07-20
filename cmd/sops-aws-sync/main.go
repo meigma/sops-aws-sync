@@ -163,7 +163,7 @@ func setupFailure(
 ) (application.Report, error) {
 	kind := classifySetupFailure(ctx, err)
 	report := application.Report{
-		SchemaVersion: "sops-aws-sync/report/v1", ToolVersion: version, GitRevision: revision.Value(),
+		SchemaVersion: application.ReportSchemaVersion, ToolVersion: version, GitRevision: revision.Value(),
 		Status: string(kind), Verification: "not-run", DurationMilliseconds: time.Since(started).Milliseconds(),
 	}
 

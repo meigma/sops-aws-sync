@@ -82,6 +82,7 @@ func TestRuntimeBuildsDesiredStateBeforeAWS(t *testing.T) {
 	var outcome *application.OutcomeError
 	require.ErrorAs(t, err, &outcome)
 	assert.Equal(t, application.OutcomeInvalid, outcome.Kind())
+	assert.Equal(t, application.ReportSchemaVersion, report.SchemaVersion)
 	assert.Equal(t, "invalid", report.Status)
 	assert.Equal(t, []string{"source", "decrypt"}, events)
 }
@@ -113,6 +114,7 @@ func TestRuntimePreservesAWSSetupFailureClassifications(t *testing.T) {
 			var outcome *application.OutcomeError
 			require.ErrorAs(t, err, &outcome)
 			assert.Equal(t, test.wantKind, outcome.Kind())
+			assert.Equal(t, application.ReportSchemaVersion, report.SchemaVersion)
 			assert.Equal(t, string(test.wantKind), report.Status)
 			assert.Equal(t, []string{"source", "decrypt", "aws"}, events)
 			assert.Equal(t, "0123456789abcdef0123456789abcdef01234567", report.GitRevision)

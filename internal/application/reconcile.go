@@ -13,6 +13,8 @@ import (
 )
 
 const (
+	// ReportSchemaVersion identifies the stable machine report contract.
+	ReportSchemaVersion      = "sops-aws-sync/report/v1"
 	statusConverged          = "converged"
 	statusVerificationFailed = "verification-failed"
 	verificationNotRun       = "not-run"
@@ -191,66 +193,61 @@ func (service *Service) Plan(ctx context.Context, input ReconcileInput) (Report,
 }
 
 // Sync applies supported operations and requires a converged direct re-plan.
-func (service *Service) Sync(ctx context.Context, input ReconcileInput) (Report, error) {
+//
+//nolint:nonamedreturns // The named report lets deferred duration stamping cover every exit.
+func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report Report, resultErr error) {
 	started := time.Now()
+	defer func() {
+		report.DurationMilliseconds = time.Since(started).Milliseconds()
+	}()
 	plan, desired, scope, revision, err := service.buildPlan(ctx, input)
-	report := service.newReport(plan, revision, started)
+	report = service.newReport(plan, revision, started)
+	fail := func(failure error) (Report, error) {
+		report.Status, report.Verification = outcomeReport(failure)
+
+		return report, failure
+	}
 	if err != nil {
 		classified := service.classifyPreflightError(ctx, err)
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
 	if validationErr := plan.ValidatePhaseTwo(); validationErr != nil {
-		report.Status = string(OutcomeConflict)
-		return report, NewOutcomeError(OutcomeConflict)
+		return fail(NewOutcomeError(OutcomeConflict))
 	}
 	for rebuilds := 0; ; rebuilds++ {
 		rebuild, applyErr := service.applyPlan(ctx, scope, plan, input.ShowResourceNames)
 		if applyErr != nil {
-			report.Status, report.Verification = applyOutcomeReport(applyErr)
-			report.DurationMilliseconds = time.Since(started).Milliseconds()
-			return report, applyErr
+			return fail(applyErr)
 		}
 		if !rebuild {
 			break
 		}
 		if rebuilds >= maximumPlanRebuilds {
-			report.Status = statusVerificationFailed
-			report.Verification = verificationFailed
-			report.DurationMilliseconds = time.Since(started).Milliseconds()
-			return report, NewOutcomeError(OutcomeVerification)
+			return fail(NewOutcomeError(OutcomeVerification))
 		}
 		rebuiltPlan, rebuildErr := service.rebuildPlan(ctx, desired, scope)
 		if rebuildErr != nil {
-			report.Status, report.Verification = applyOutcomeReport(rebuildErr)
-			report.DurationMilliseconds = time.Since(started).Milliseconds()
-			return report, rebuildErr
+			return fail(rebuildErr)
 		}
 		plan = rebuiltPlan
 		report.Counts = plan.Counts()
 		if err := plan.ValidatePhaseTwo(); err != nil {
-			report.Status = string(OutcomeConflict)
-			return report, NewOutcomeError(OutcomeConflict)
+			return fail(NewOutcomeError(OutcomeConflict))
 		}
 	}
 	verified, verificationErr := service.verify(ctx, input, desired, scope)
 	report.Verification = statusConverged
 	if verificationErr != nil {
-		report.Status = "verification-inconclusive"
-		report.Verification = "inconclusive"
-		report.DurationMilliseconds = time.Since(started).Milliseconds()
+		report.Status, report.Verification = verificationErrorReport(verificationErr)
 		return report, verificationErr
 	}
 	if !verified.Converged() {
-		report.Status = statusVerificationFailed
-		report.Verification = verificationFailed
-		report.DurationMilliseconds = time.Since(started).Milliseconds()
-		return report, NewOutcomeError(OutcomeVerification)
+		return fail(NewOutcomeError(OutcomeVerification))
 	}
 	report.Status = statusConverged
-	report.DurationMilliseconds = time.Since(started).Milliseconds()
 	service.logger.InfoContext(ctx, "sync complete", "phase", "verify", "status", statusConverged,
-		"count", len(plan.Operations()), "duration_ms", report.DurationMilliseconds)
+		"count", len(plan.Operations()), "duration_ms", time.Since(started).Milliseconds())
 
 	return report, nil
 }
@@ -465,7 +462,7 @@ func (service *Service) verify(
 		}
 		select {
 		case <-verificationContext.Done():
-			return domain.Plan{}, service.classifyVerificationError(ctx)
+			return domain.Plan{}, classifyVerificationError(ctx)
 		case <-time.After(verificationPollInterval):
 		}
 	}
@@ -478,7 +475,7 @@ func (service *Service) newReport(
 	started time.Time,
 ) Report {
 	return Report{
-		SchemaVersion:        "sops-aws-sync/report/v1",
+		SchemaVersion:        ReportSchemaVersion,
 		ToolVersion:          service.version,
 		GitRevision:          revision.Value(),
 		Status:               string(OutcomeInvalid),
@@ -522,8 +519,8 @@ func preflightStatus(err error) string {
 	return string(OutcomeInvalid)
 }
 
-// applyOutcomeReport maps typed apply failures to consistent machine status fields.
-func applyOutcomeReport(err error) (string, string) {
+// outcomeReport maps typed failures to consistent machine status fields.
+func outcomeReport(err error) (string, string) {
 	var outcome *OutcomeError
 	if !errors.As(err, &outcome) {
 		return string(OutcomeApplyFailed), verificationNotRun
@@ -542,6 +539,16 @@ func applyOutcomeReport(err error) (string, string) {
 	}
 
 	return string(OutcomeApplyFailed), verificationNotRun
+}
+
+// verificationErrorReport distinguishes stabilization timeout from parent interruption.
+func verificationErrorReport(err error) (string, string) {
+	var outcome *OutcomeError
+	if errors.As(err, &outcome) && outcome.Kind() == OutcomeVerification {
+		return "verification-inconclusive", "inconclusive"
+	}
+
+	return outcomeReport(err)
 }
 
 // classifyApplyError maps canceled and unknown writes to stable result classes.
@@ -571,8 +578,7 @@ func (service *Service) logSafeAWSError(ctx context.Context, err error) {
 }
 
 // classifyVerificationError preserves parent cancellation versus stabilization timeout.
-func (service *Service) classifyVerificationError(parent context.Context) error {
-	_ = service
+func classifyVerificationError(parent context.Context) error {
 	if parent.Err() != nil {
 		return NewOutcomeError(OutcomeInterrupted)
 	}
