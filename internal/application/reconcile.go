@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"time"
 
@@ -25,6 +26,45 @@ const (
 )
 
 var errPlanChanged = errors.New("reconciliation plan changed")
+
+// applyResult retains mutation evidence that must survive harmless plan rebuilds.
+type applyResult struct {
+	rebuild             bool
+	rebuiltAfterRestore bool
+	affected            map[string]domain.SecretName
+	restored            map[string]domain.SecretName
+}
+
+// newApplyResult constructs empty per-run mutation evidence.
+func newApplyResult() applyResult {
+	return applyResult{
+		affected: make(map[string]domain.SecretName),
+		restored: make(map[string]domain.SecretName),
+	}
+}
+
+// merge retains every applied target and restore across one or more plan attempts.
+func (result *applyResult) merge(other applyResult) {
+	result.rebuild = other.rebuild
+	result.rebuiltAfterRestore = result.rebuiltAfterRestore || other.rebuiltAfterRestore
+	maps.Copy(result.affected, other.affected)
+	maps.Copy(result.restored, other.restored)
+}
+
+// affect retains one planned target that must be directly verified after apply.
+func (result *applyResult) affect(operation domain.Operation) {
+	name := operation.Name()
+	result.affected[name.Value()] = name
+}
+
+// record retains one operation whose mutation outcome was proved successful.
+func (result *applyResult) record(operation domain.Operation) {
+	result.affect(operation)
+	name := operation.Name()
+	if operation.Kind() == domain.DecisionRestore {
+		result.restored[name.Value()] = name
+	}
+}
 
 // SecretsManager is the scope discovery, direct observation, and lifecycle mutation port.
 type SecretsManager interface {
@@ -221,17 +261,26 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report 
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
-	plan, err = service.applyWithRebuilds(ctx, input, desired, scope, plan)
+	var applied applyResult
+	plan, applied, err = service.applyWithRebuilds(ctx, input, desired, scope, plan)
 	report.Counts = plan.Counts()
 	if err != nil {
 		return fail(err)
 	}
-	followUpCounts, err := service.applyRestoreFollowUp(ctx, input, desired, scope, plan)
+	followUpCounts, followUpApplied, err := service.applyRestoreFollowUp(
+		ctx,
+		input,
+		desired,
+		scope,
+		plan,
+		applied,
+	)
 	if err != nil {
 		return fail(err)
 	}
+	applied.merge(followUpApplied)
 	report.Counts = addExecutableCounts(report.Counts, followUpCounts)
-	verified, verificationErr := service.verify(ctx, input, desired, scope)
+	verified, verificationErr := service.verify(ctx, input, desired, scope, applied.affected)
 	report.Verification = statusConverged
 	if verificationErr != nil {
 		report.Status, report.Verification = verificationErrorReport(verificationErr)
@@ -254,30 +303,36 @@ func (service *Service) applyWithRebuilds(
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
 	plan domain.Plan,
-) (domain.Plan, error) {
+) (domain.Plan, applyResult, error) {
+	applied := newApplyResult()
 	if err := validatePlan(desired, plan, input.AllowEmpty); err != nil {
-		return plan, err
+		return plan, applied, err
 	}
 	for rebuilds := 0; ; rebuilds++ {
-		rebuild, err := service.applyPlan(
+		attempt, err := service.applyPlan(
 			ctx,
 			scope,
 			plan,
 			input.RecoveryWindowDays,
 			input.ShowResourceNames,
 		)
-		if err != nil || !rebuild {
-			return plan, err
+		applied.merge(attempt)
+		if err != nil || !attempt.rebuild {
+			return plan, applied, err
 		}
 		if rebuilds >= maximumPlanRebuilds {
-			return plan, NewOutcomeError(OutcomeVerification)
+			return plan, applied, NewOutcomeError(OutcomeVerification)
 		}
 		plan, err = service.rebuildPlan(ctx, desired, scope)
 		if err != nil {
-			return plan, err
+			return plan, applied, err
 		}
 		if err = validatePlan(desired, plan, input.AllowEmpty); err != nil {
-			return plan, err
+			return plan, applied, err
+		}
+		if len(applied.restored) > 0 {
+			applied.rebuiltAfterRestore = true
+			return plan, applied, nil
 		}
 	}
 }
@@ -289,16 +344,39 @@ func (service *Service) applyRestoreFollowUp(
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
 	initial domain.Plan,
-) (domain.Counts, error) {
-	restored := operationNames(initial, domain.DecisionRestore)
-	if len(restored) == 0 {
-		return domain.Counts{}, nil
+	applied applyResult,
+) (domain.Counts, applyResult, error) {
+	followUpApplied := newApplyResult()
+	if len(applied.restored) == 0 {
+		return domain.Counts{}, followUpApplied, nil
 	}
-	followUp, err := service.waitForRestoreFollowUp(ctx, input, desired, scope, restored)
+	followUp := initial
+	if applied.rebuiltAfterRestore {
+		pending, err := validateRestoreFollowUp(followUp, applied.restored)
+		if err != nil {
+			return followUp.Counts(), followUpApplied, err
+		}
+		if !pending {
+			return service.applyRestorePlan(ctx, input, scope, followUp)
+		}
+	}
+	var err error
+	followUp, err = service.waitForRestoreFollowUp(ctx, input, desired, scope, applied.restored)
 	if err != nil || len(followUp.Operations()) == 0 {
-		return followUp.Counts(), err
+		return followUp.Counts(), followUpApplied, err
 	}
-	rebuild, err := service.applyPlan(
+
+	return service.applyRestorePlan(ctx, input, scope, followUp)
+}
+
+// applyRestorePlan applies the single permitted restore follow-up cycle without rebuilding.
+func (service *Service) applyRestorePlan(
+	ctx context.Context,
+	input ReconcileInput,
+	scope domain.ScopeIdentity,
+	followUp domain.Plan,
+) (domain.Counts, applyResult, error) {
+	applied, err := service.applyPlan(
 		ctx,
 		scope,
 		followUp,
@@ -306,13 +384,13 @@ func (service *Service) applyRestoreFollowUp(
 		input.ShowResourceNames,
 	)
 	if err != nil {
-		return followUp.Counts(), err
+		return followUp.Counts(), applied, err
 	}
-	if rebuild {
-		return followUp.Counts(), NewOutcomeError(OutcomeVerification)
+	if applied.rebuild {
+		return followUp.Counts(), applied, NewOutcomeError(OutcomeVerification)
 	}
 
-	return followUp.Counts(), nil
+	return followUp.Counts(), applied, nil
 }
 
 // applyPlan applies one phase-ordered plan or asks the caller to rebuild all decisions.
@@ -322,8 +400,10 @@ func (service *Service) applyPlan(
 	plan domain.Plan,
 	recoveryWindowDays int32,
 	showName bool,
-) (bool, error) {
+) (applyResult, error) {
+	result := newApplyResult()
 	for index, operation := range plan.Operations() {
+		result.affect(operation)
 		if err := service.applyOperation(
 			ctx,
 			scope,
@@ -333,14 +413,16 @@ func (service *Service) applyPlan(
 			showName,
 		); err != nil {
 			if errors.Is(err, errPlanChanged) {
-				return true, nil
+				result.rebuild = true
+				return result, nil
 			}
 
-			return false, err
+			return result, err
 		}
+		result.record(operation)
 	}
 
-	return false, nil
+	return result, nil
 }
 
 // rebuildPlan re-observes the complete desired and discovered scope union.
@@ -393,6 +475,16 @@ func (service *Service) observeAll(
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
 ) ([]domain.ObservedSlot, error) {
+	return service.observeAllWithAffected(ctx, desired, scope, nil)
+}
+
+// observeAllWithAffected directly observes every applied target even when discovery omits it.
+func (service *Service) observeAllWithAffected(
+	ctx context.Context,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	affected map[string]domain.SecretName,
+) ([]domain.ObservedSlot, error) {
 	discovered, err := service.secrets.Discover(ctx)
 	if err != nil {
 		return nil, err
@@ -420,6 +512,11 @@ func (service *Service) observeAll(
 			return nil, errors.New("scope discovery returned a duplicate name")
 		}
 		candidates[name] = candidate.Name
+	}
+	for name, target := range affected {
+		if _, desiredName := desiredNames[name]; !desiredName {
+			candidates[name] = target
+		}
 	}
 	sortedNames := make([]string, 0, len(candidates))
 	for name := range candidates {
@@ -582,18 +679,6 @@ func validatePlan(desired []domain.DesiredSecret, plan domain.Plan, allowEmpty b
 	return nil
 }
 
-// operationNames returns the target names for one operation kind.
-func operationNames(plan domain.Plan, kind domain.DecisionKind) map[string]struct{} {
-	names := make(map[string]struct{})
-	for _, operation := range plan.Operations() {
-		if operation.Kind() == kind {
-			names[operation.Name().Value()] = struct{}{}
-		}
-	}
-
-	return names
-}
-
 // addExecutableCounts adds follow-up operations without double-counting repeated no-op observations.
 func addExecutableCounts(base, additional domain.Counts) domain.Counts {
 	base.Create += additional.Create
@@ -610,7 +695,7 @@ func (service *Service) waitForRestoreFollowUp(
 	input ReconcileInput,
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
-	restored map[string]struct{},
+	restored map[string]domain.SecretName,
 ) (domain.Plan, error) {
 	verificationContext, cancel := context.WithTimeout(ctx, input.VerificationTimeout)
 	defer cancel()
@@ -634,7 +719,7 @@ func (service *Service) waitForRestoreFollowUp(
 }
 
 // validateRestoreFollowUp accepts only waiting restores or updates for initially restored names.
-func validateRestoreFollowUp(plan domain.Plan, restored map[string]struct{}) (bool, error) {
+func validateRestoreFollowUp(plan domain.Plan, restored map[string]domain.SecretName) (bool, error) {
 	if len(plan.Conflicts()) > 0 {
 		return false, NewOutcomeError(OutcomeConflict)
 	}
@@ -661,11 +746,12 @@ func (service *Service) verify(
 	input ReconcileInput,
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
+	affected map[string]domain.SecretName,
 ) (domain.Plan, error) {
 	verificationContext, cancel := context.WithTimeout(ctx, input.VerificationTimeout)
 	defer cancel()
 	for {
-		observed, err := service.observeAll(verificationContext, desired, scope)
+		observed, err := service.observeAllWithAffected(verificationContext, desired, scope, affected)
 		if err == nil {
 			plan, planErr := domain.BuildPlan(desired, observed)
 			if planErr != nil {

@@ -77,7 +77,10 @@ func (ambiguousMutationError) Canceled() bool {
 // memorySecrets models direct desired-name AWS evidence and mutation calls.
 type memorySecrets struct {
 	discovered      []domain.DiscoveryEvidence
+	discoveries     [][]domain.DiscoveryEvidence
+	discoverCalls   int
 	managedEvidence map[string]domain.ObservedEvidence
+	managedCalls    map[string]int
 	evidence        domain.ObservedEvidence
 	scope           domain.ScopeIdentity
 	createCalls     int
@@ -89,6 +92,7 @@ type memorySecrets struct {
 	updateErr       error
 	deleteErr       error
 	ambiguousDelete bool
+	deleteNoEffect  bool
 	tokens          []string
 	ambiguousApply  bool
 	ambiguousBefore bool
@@ -106,6 +110,83 @@ type orderingSecrets struct {
 	observeCalls map[string]int
 	operations   []string
 	driftName    string
+}
+
+// restoreRebuildSecrets introduces unrelated drift after one restore has been applied.
+type restoreRebuildSecrets struct {
+	current      map[string]domain.ObservedEvidence
+	observeCalls map[string]int
+	driftName    string
+	operations   []string
+}
+
+// Discover returns no removed scope members for this direct desired-name scenario.
+func (secrets *restoreRebuildSecrets) Discover(_ context.Context) ([]domain.DiscoveryEvidence, error) {
+	return nil, nil
+}
+
+// Observe introduces unrelated desired-name drift after initial planning.
+func (secrets *restoreRebuildSecrets) Observe(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+) (domain.ObservedEvidence, error) {
+	name := desired.Name().Value()
+	call := secrets.observeCalls[name]
+	secrets.observeCalls[name]++
+	if name == secrets.driftName && call == 1 {
+		secrets.current[name] = ownedApplicationEvidenceWithValue(desired, scope, `{"value":"old"}`)
+	}
+
+	return secrets.current[name], nil
+}
+
+// ObserveManaged is unused because this fake returns no discovered scope members.
+func (secrets *restoreRebuildSecrets) ObserveManaged(
+	_ context.Context,
+	_ domain.SecretName,
+) (domain.ObservedEvidence, error) {
+	return domain.ObservedEvidence{}, nil
+}
+
+// Create records an unexpected create if restore-cycle validation fails.
+func (secrets *restoreRebuildSecrets) Create(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	_ domain.ScopeIdentity,
+	_ string,
+) error {
+	secrets.operations = append(secrets.operations, "create:"+desired.Name().Value())
+	return nil
+}
+
+// Update records an unexpected update if restore-cycle validation fails.
+func (secrets *restoreRebuildSecrets) Update(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	_ string,
+) error {
+	secrets.operations = append(secrets.operations, "update:"+desired.Name().Value())
+	return nil
+}
+
+// Restore records the applied restore and exposes its prior current value.
+func (secrets *restoreRebuildSecrets) Restore(_ context.Context, name domain.SecretName) error {
+	secrets.operations = append(secrets.operations, "restore:"+name.Value())
+	evidence := secrets.current[name.Value()]
+	evidence.ScheduledForDeletion = false
+	secrets.current[name.Value()] = evidence
+	return nil
+}
+
+// ScheduleDeletion records an unexpected deletion if restore-cycle validation fails.
+func (secrets *restoreRebuildSecrets) ScheduleDeletion(
+	_ context.Context,
+	name domain.SecretName,
+	_ int32,
+) error {
+	secrets.operations = append(secrets.operations, "schedule-deletion:"+name.Value())
+	return nil
 }
 
 // Discover returns no removed scope members for this desired-name ordering fake.
@@ -183,6 +264,12 @@ func (secrets *orderingSecrets) ScheduleDeletion(
 
 // Discover returns the configured scope candidates.
 func (secrets *memorySecrets) Discover(_ context.Context) ([]domain.DiscoveryEvidence, error) {
+	if len(secrets.discoveries) > 0 {
+		index := min(secrets.discoverCalls, len(secrets.discoveries)-1)
+		secrets.discoverCalls++
+		return append([]domain.DiscoveryEvidence(nil), secrets.discoveries[index]...), nil
+	}
+	secrets.discoverCalls++
 	return append([]domain.DiscoveryEvidence(nil), secrets.discovered...), nil
 }
 
@@ -211,6 +298,10 @@ func (secrets *memorySecrets) ObserveManaged(
 	_ context.Context,
 	name domain.SecretName,
 ) (domain.ObservedEvidence, error) {
+	if secrets.managedCalls == nil {
+		secrets.managedCalls = make(map[string]int)
+	}
+	secrets.managedCalls[name.Value()]++
 	return secrets.managedEvidence[name.Value()], nil
 }
 
@@ -278,6 +369,9 @@ func (secrets *memorySecrets) ScheduleDeletion(
 	}
 	if secrets.deleteErr != nil {
 		return secrets.deleteErr
+	}
+	if secrets.deleteNoEffect {
+		return nil
 	}
 	evidence := secrets.managedEvidence[name.Value()]
 	evidence.ScheduledForDeletion = true
@@ -360,6 +454,29 @@ func TestSyncSchedulesRemovedManagedSecretLast(t *testing.T) {
 	assert.Equal(t, []string{"schedule-deletion:" + removed.Name().Value()}, testContext.secrets.operations)
 	assert.Equal(t, 1, report.Counts.ScheduleDelete)
 	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncDirectlyVerifiesDeletionWhenDiscoveryOmitsTheAffectedName proves list staleness cannot report success.
+func TestSyncDirectlyVerifiesDeletionWhenDiscoveryOmitsTheAffectedName(t *testing.T) {
+	t.Parallel()
+
+	service, secrets, input := newEmptyAppTestContext(t)
+	removed := addRemovedManagedSecret(t, secrets, applicationScope(t))
+	secrets.discoveries = [][]domain.DiscoveryEvidence{
+		append([]domain.DiscoveryEvidence(nil), secrets.discovered...),
+		nil,
+	}
+	secrets.deleteNoEffect = true
+	input.AllowEmpty = true
+	input.VerificationTimeout = 20 * time.Millisecond
+
+	report, err := service.Sync(context.Background(), input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeVerification, outcome.Kind())
+	assert.Equal(t, "verification-inconclusive", report.Status)
+	assert.GreaterOrEqual(t, secrets.managedCalls[removed.Name().Value()], 3,
+		"verification must directly observe the affected deletion target")
 }
 
 // TestEmptyDesiredRequiresAuthorizationOnlyForNewDeletions proves the narrow allow-empty gate.
@@ -540,6 +657,56 @@ func TestSyncRebuildsWholePlanAfterHarmlessDrift(t *testing.T) {
 	assert.Equal(t, 1, report.Counts.Create)
 	assert.Equal(t, 1, report.Counts.Update)
 	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncPreservesAppliedRestoreBookkeepingAcrossRebuilds rejects unrelated follow-up operations.
+func TestSyncPreservesAppliedRestoreBookkeepingAcrossRebuilds(t *testing.T) {
+	t.Parallel()
+
+	value, err := domain.NewSecretValue([]byte(`{"value":"desired"}`))
+	require.NoError(t, err)
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	source := &fakeSource{snapshot: application.SourceSnapshot{
+		Revision: revision,
+		Documents: []application.EncryptedDocument{
+			{Path: "secrets/a.sops.json", Data: []byte("encrypted-a")},
+			{Path: "secrets/b.sops.json", Data: []byte("encrypted-b")},
+		},
+	}}
+	snapshot, err := application.BuildDesiredSnapshot(
+		context.Background(),
+		source,
+		&fakeDecrypter{value: value},
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"},
+	)
+	require.NoError(t, err)
+	scope := applicationScope(t)
+	desiredA := newApplicationDesired(t, "a", value, revision)
+	desiredB := newApplicationDesired(t, "b", value, revision)
+	old := `{"value":"old"}`
+	scheduled := ownedApplicationEvidenceWithValue(desiredA, scope, old)
+	scheduled.ScheduledForDeletion = true
+	secrets := &restoreRebuildSecrets{
+		current: map[string]domain.ObservedEvidence{
+			desiredA.Name().Value(): scheduled,
+			desiredB.Name().Value(): {},
+		},
+		observeCalls: map[string]int{},
+		driftName:    desiredB.Name().Value(),
+	}
+	service, err := application.NewService(snapshot, secrets, &sequenceTokens{}, slog.Default(), "test")
+	require.NoError(t, err)
+	report, err := service.Sync(context.Background(), application.ReconcileInput{
+		RepositoryID: "meigma/example", SourceRoot: "secrets", SecretPrefix: "/acme/payments",
+		RecoveryWindowDays: 30, VerificationTimeout: 20 * time.Millisecond,
+	})
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeVerification, outcome.Kind())
+	assert.Equal(t, "verification-failed", report.Status)
+	assert.Equal(t, []string{"restore:" + desiredA.Name().Value()}, secrets.operations,
+		"a rebuild after restore must not apply unrelated operations")
 }
 
 // TestSyncBoundsRepeatedPreconditionReplans proves concurrent churn cannot loop indefinitely.
@@ -756,6 +923,24 @@ func addRemovedManagedSecret(
 	secrets.managedEvidence[name.Value()] = evidence
 
 	return removed
+}
+
+// newApplicationDesired constructs one mapped desired secret for multi-name orchestration tests.
+func newApplicationDesired(
+	t *testing.T,
+	stem string,
+	value domain.SecretValue,
+	revision domain.Revision,
+) domain.DesiredSecret {
+	t.Helper()
+	name, source, err := domain.MapSourcePath(
+		"secrets",
+		"/acme/payments",
+		"secrets/"+stem+".sops.json",
+	)
+	require.NoError(t, err)
+
+	return domain.NewDesiredSecret(name, source, value, revision)
 }
 
 // applicationScope returns the exact test ownership scope.
