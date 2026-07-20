@@ -21,8 +21,8 @@ import (
 	"github.com/meigma/sops-aws-sync/internal/domain"
 )
 
-// TestAWSSandboxCreateUpdateNoOpAndVerification proves the opt-in genuine service slice.
-func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
+// TestAWSSandboxCompleteLifecycleAndVerification proves the opt-in genuine V1 CLI lifecycle.
+func TestAWSSandboxCompleteLifecycleAndVerification(t *testing.T) {
 	prefix := strings.TrimSuffix(os.Getenv("SOPS_AWS_SYNC_AWS_SANDBOX_PREFIX"), "/")
 	region := os.Getenv("SOPS_AWS_SYNC_AWS_SANDBOX_REGION")
 	if prefix == "" || region == "" {
@@ -36,7 +36,7 @@ func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
 	adapter, err := secretsadapter.New(client, 30*time.Second)
 	require.NoError(t, err)
 	nameSuffix := sandboxToken(t)
-	secretName, err := domain.NewSecretName(prefix + "/phase2-" + nameSuffix)
+	secretName, err := domain.NewSecretName(prefix + "/phase3-" + nameSuffix)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -53,7 +53,7 @@ func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
 	source := &fakeSource{snapshot: application.SourceSnapshot{
 		Revision: revision,
 		Documents: []application.EncryptedDocument{
-			{Path: "secrets/phase2-" + nameSuffix + ".sops.json", Data: []byte("encrypted")},
+			{Path: "secrets/phase3-" + nameSuffix + ".sops.json", Data: []byte("encrypted")},
 		},
 	}}
 	decrypter := &fakeDecrypter{value: initialValue}
@@ -71,7 +71,7 @@ func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
 	require.NoError(t, err)
 	input := application.ReconcileInput{
 		RepositoryID: "meigma/sops-aws-sync-sandbox", SourceRoot: "secrets",
-		SecretPrefix: prefix, VerificationTimeout: 30 * time.Second,
+		SecretPrefix: prefix, RecoveryWindowDays: 7, VerificationTimeout: 30 * time.Second,
 	}
 
 	report, err := service.Sync(ctx, input)
@@ -91,6 +91,61 @@ func TestAWSSandboxCreateUpdateNoOpAndVerification(t *testing.T) {
 	report, err = service.Sync(ctx, input)
 	require.NoError(t, err)
 	assert.Equal(t, 1, report.Counts.Unchanged)
+
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		discovered, discoverErr := adapter.Discover(ctx)
+		if !assert.NoError(collect, discoverErr) {
+			return
+		}
+		assert.Contains(collect, discoveredNames(discovered), secretName.Value())
+	}, 30*time.Second, 500*time.Millisecond)
+
+	_, err = client.PutSecretValue(ctx, &awssm.PutSecretValueInput{
+		SecretId: aws.String(secretName.Value()), SecretString: aws.String(`{"value":"restore-drift"}`),
+		ClientRequestToken: aws.String(sandboxToken(t)),
+	})
+	require.NoError(t, err)
+	emptySnapshot, err := application.BuildDesiredSnapshot(
+		ctx,
+		&fakeSource{snapshot: application.SourceSnapshot{Revision: revision}},
+		&fakeDecrypter{},
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: prefix},
+	)
+	require.NoError(t, err)
+	emptyService, err := application.NewService(
+		emptySnapshot,
+		adapter,
+		application.RandomTokenSource{},
+		slog.Default(),
+		"sandbox",
+	)
+	require.NoError(t, err)
+	emptyInput := input
+	emptyInput.AllowEmpty = true
+	report, err = emptyService.Sync(ctx, emptyInput)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Counts.ScheduleDelete)
+
+	emptyInput.AllowEmpty = false
+	report, err = emptyService.Sync(ctx, emptyInput)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Counts.Unchanged)
+
+	report, err = service.Sync(ctx, input)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Counts.Restore)
+	assert.Equal(t, 1, report.Counts.Update)
+	assert.Equal(t, "converged", report.Verification)
+}
+
+// discoveredNames returns the candidate names used by the sandbox polling assertion.
+func discoveredNames(discovered []domain.DiscoveryEvidence) []string {
+	names := make([]string, 0, len(discovered))
+	for _, candidate := range discovered {
+		names = append(names, candidate.Name.Value())
+	}
+
+	return names
 }
 
 // sandboxToken returns a random 32-character token suitable for names and AWS writes.

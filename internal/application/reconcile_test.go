@@ -350,7 +350,7 @@ func TestSyncSchedulesRemovedManagedSecretLast(t *testing.T) {
 
 	testContext := newAppTestContext(t)
 	testContext.secrets.evidence = ownedApplicationEvidence(testContext.desired, testContext.secrets.scope)
-	removed := addRemovedManagedSecret(t, testContext.secrets, testContext.secrets.scope, "removed")
+	removed := addRemovedManagedSecret(t, testContext.secrets, testContext.secrets.scope)
 	testContext.input.RecoveryWindowDays = 14
 
 	report, err := testContext.service.Sync(context.Background(), testContext.input)
@@ -367,7 +367,7 @@ func TestEmptyDesiredRequiresAuthorizationOnlyForNewDeletions(t *testing.T) {
 	t.Parallel()
 
 	service, secrets, input := newEmptyAppTestContext(t)
-	addRemovedManagedSecret(t, secrets, applicationScope(t), "removed")
+	addRemovedManagedSecret(t, secrets, applicationScope(t))
 
 	report, err := service.Sync(context.Background(), input)
 	var outcome *application.OutcomeError
@@ -399,7 +399,7 @@ func TestSyncStopsBeforeDeletionOnPartialFailure(t *testing.T) {
 		testContext.secrets.scope,
 		`{"password":"old"}`,
 	)
-	removed := addRemovedManagedSecret(t, testContext.secrets, testContext.secrets.scope, "removed")
+	removed := addRemovedManagedSecret(t, testContext.secrets, testContext.secrets.scope)
 	testContext.secrets.updateErr = errors.New("update failure sentinel")
 
 	report, err := testContext.service.Sync(context.Background(), testContext.input)
@@ -417,7 +417,7 @@ func TestAmbiguousDeletionStopsWithoutBlindRetryAndLaterConverges(t *testing.T) 
 	t.Parallel()
 
 	service, secrets, input := newEmptyAppTestContext(t)
-	addRemovedManagedSecret(t, secrets, applicationScope(t), "removed")
+	addRemovedManagedSecret(t, secrets, applicationScope(t))
 	input.AllowEmpty = true
 	secrets.ambiguousDelete = true
 
@@ -735,12 +735,11 @@ func addRemovedManagedSecret(
 	t *testing.T,
 	secrets *memorySecrets,
 	scope domain.ScopeIdentity,
-	stem string,
 ) domain.DesiredSecret {
 	t.Helper()
-	name, err := domain.NewSecretName("/acme/payments/" + stem)
+	name, err := domain.NewSecretName("/acme/payments/removed")
 	require.NoError(t, err)
-	source, err := domain.NewSourceIdentity("secrets/" + stem + ".sops.json")
+	source, err := domain.NewSourceIdentity("secrets/removed.sops.json")
 	require.NoError(t, err)
 	value, err := domain.NewSecretValue([]byte(`{"removed":"sentinel"}`))
 	require.NoError(t, err)

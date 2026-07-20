@@ -174,7 +174,11 @@ func TestClassifyManagedRequiresExactScopeAndValidSource(t *testing.T) {
 		evidence domain.ObservedEvidence
 		want     domain.ObservedKind
 	}{
-		{name: "exact active member", evidence: ownedEvidence(scope, secret, nil, false), want: domain.ObservedOwnedActiveUnknown},
+		{
+			name:     "exact active member",
+			evidence: ownedEvidence(scope, secret, nil, false),
+			want:     domain.ObservedOwnedActiveUnknown,
+		},
 		{name: "missing reserved tags", evidence: domain.ObservedEvidence{Exists: true}, want: domain.ObservedForeign},
 		{
 			name: "malformed source digest",

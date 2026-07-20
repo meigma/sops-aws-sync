@@ -185,13 +185,9 @@ func (service *Service) Plan(ctx context.Context, input ReconcileInput) (Report,
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
-	if len(plan.Conflicts()) > 0 {
-		report.Status = string(OutcomeConflict)
-		return report, NewOutcomeError(OutcomeConflict)
-	}
-	if emptyStateBlocked(desired, plan, input.AllowEmpty) {
-		report.Status = string(OutcomeInvalid)
-		return report, NewOutcomeError(OutcomeInvalid)
+	if validationErr := validatePlan(desired, plan, input.AllowEmpty); validationErr != nil {
+		report.Status, _ = outcomeReport(validationErr)
+		return report, validationErr
 	}
 	if plan.Converged() {
 		report.Status = statusConverged
@@ -225,65 +221,16 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report 
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
-	if len(plan.Conflicts()) > 0 {
-		return fail(NewOutcomeError(OutcomeConflict))
+	plan, err = service.applyWithRebuilds(ctx, input, desired, scope, plan)
+	report.Counts = plan.Counts()
+	if err != nil {
+		return fail(err)
 	}
-	if emptyStateBlocked(desired, plan, input.AllowEmpty) {
-		return fail(NewOutcomeError(OutcomeInvalid))
+	followUpCounts, err := service.applyRestoreFollowUp(ctx, input, desired, scope, plan)
+	if err != nil {
+		return fail(err)
 	}
-	for rebuilds := 0; ; rebuilds++ {
-		rebuild, applyErr := service.applyPlan(
-			ctx,
-			scope,
-			plan,
-			input.RecoveryWindowDays,
-			input.ShowResourceNames,
-		)
-		if applyErr != nil {
-			return fail(applyErr)
-		}
-		if !rebuild {
-			break
-		}
-		if rebuilds >= maximumPlanRebuilds {
-			return fail(NewOutcomeError(OutcomeVerification))
-		}
-		rebuiltPlan, rebuildErr := service.rebuildPlan(ctx, desired, scope)
-		if rebuildErr != nil {
-			return fail(rebuildErr)
-		}
-		plan = rebuiltPlan
-		report.Counts = plan.Counts()
-		if len(plan.Conflicts()) > 0 {
-			return fail(NewOutcomeError(OutcomeConflict))
-		}
-		if emptyStateBlocked(desired, plan, input.AllowEmpty) {
-			return fail(NewOutcomeError(OutcomeInvalid))
-		}
-	}
-	restored := operationNames(plan, domain.DecisionRestore)
-	if len(restored) > 0 {
-		followUp, followErr := service.waitForRestoreFollowUp(ctx, input, desired, scope, restored)
-		if followErr != nil {
-			return fail(followErr)
-		}
-		if len(followUp.Operations()) > 0 {
-			rebuild, applyErr := service.applyPlan(
-				ctx,
-				scope,
-				followUp,
-				input.RecoveryWindowDays,
-				input.ShowResourceNames,
-			)
-			if applyErr != nil {
-				return fail(applyErr)
-			}
-			if rebuild {
-				return fail(NewOutcomeError(OutcomeVerification))
-			}
-			report.Counts = addExecutableCounts(report.Counts, followUp.Counts())
-		}
-	}
+	report.Counts = addExecutableCounts(report.Counts, followUpCounts)
 	verified, verificationErr := service.verify(ctx, input, desired, scope)
 	report.Verification = statusConverged
 	if verificationErr != nil {
@@ -298,6 +245,74 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report 
 		"count", len(plan.Operations()), "duration_ms", time.Since(started).Milliseconds())
 
 	return report, nil
+}
+
+// applyWithRebuilds applies one complete plan and permits one harmless precondition rebuild.
+func (service *Service) applyWithRebuilds(
+	ctx context.Context,
+	input ReconcileInput,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	plan domain.Plan,
+) (domain.Plan, error) {
+	if err := validatePlan(desired, plan, input.AllowEmpty); err != nil {
+		return plan, err
+	}
+	for rebuilds := 0; ; rebuilds++ {
+		rebuild, err := service.applyPlan(
+			ctx,
+			scope,
+			plan,
+			input.RecoveryWindowDays,
+			input.ShowResourceNames,
+		)
+		if err != nil || !rebuild {
+			return plan, err
+		}
+		if rebuilds >= maximumPlanRebuilds {
+			return plan, NewOutcomeError(OutcomeVerification)
+		}
+		plan, err = service.rebuildPlan(ctx, desired, scope)
+		if err != nil {
+			return plan, err
+		}
+		if err = validatePlan(desired, plan, input.AllowEmpty); err != nil {
+			return plan, err
+		}
+	}
+}
+
+// applyRestoreFollowUp performs at most one update-only cycle for initially restored names.
+func (service *Service) applyRestoreFollowUp(
+	ctx context.Context,
+	input ReconcileInput,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	initial domain.Plan,
+) (domain.Counts, error) {
+	restored := operationNames(initial, domain.DecisionRestore)
+	if len(restored) == 0 {
+		return domain.Counts{}, nil
+	}
+	followUp, err := service.waitForRestoreFollowUp(ctx, input, desired, scope, restored)
+	if err != nil || len(followUp.Operations()) == 0 {
+		return followUp.Counts(), err
+	}
+	rebuild, err := service.applyPlan(
+		ctx,
+		scope,
+		followUp,
+		input.RecoveryWindowDays,
+		input.ShowResourceNames,
+	)
+	if err != nil {
+		return followUp.Counts(), err
+	}
+	if rebuild {
+		return followUp.Counts(), NewOutcomeError(OutcomeVerification)
+	}
+
+	return followUp.Counts(), nil
 }
 
 // applyPlan applies one phase-ordered plan or asks the caller to rebuild all decisions.
@@ -443,6 +458,8 @@ func (service *Service) applyOperation(
 		return NewOutcomeError(OutcomeConflict)
 	case domain.TransitionRetrySameToken:
 		return NewOutcomeError(OutcomeApplyFailed)
+	case domain.TransitionInconclusive:
+		return NewOutcomeError(OutcomeApplyFailed)
 	case domain.TransitionApply:
 	}
 	token := ""
@@ -551,6 +568,18 @@ func (service *Service) observeOperation(
 // emptyStateBlocked reports a newly destructive empty snapshot without explicit authorization.
 func emptyStateBlocked(desired []domain.DesiredSecret, plan domain.Plan, allowEmpty bool) bool {
 	return len(desired) == 0 && plan.Counts().ScheduleDelete > 0 && !allowEmpty
+}
+
+// validatePlan rejects conflicts and unauthorized destructive empty snapshots before mutation.
+func validatePlan(desired []domain.DesiredSecret, plan domain.Plan, allowEmpty bool) error {
+	if len(plan.Conflicts()) > 0 {
+		return NewOutcomeError(OutcomeConflict)
+	}
+	if emptyStateBlocked(desired, plan, allowEmpty) {
+		return NewOutcomeError(OutcomeInvalid)
+	}
+
+	return nil
 }
 
 // operationNames returns the target names for one operation kind.
