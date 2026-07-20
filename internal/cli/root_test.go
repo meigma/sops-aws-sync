@@ -69,6 +69,16 @@ func TestVersionContractsDoNotLoadConfiguration(t *testing.T) {
 	}
 }
 
+// TestRootWithoutSubcommandShowsHelpWithoutConfiguration proves the command family entrypoint is discoverable.
+func TestRootWithoutSubcommandShowsHelpWithoutConfiguration(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	root := NewRootCommand(Options{Out: &stdout})
+	require.NoError(t, root.ExecuteContext(context.Background()))
+	assert.Contains(t, stdout.String(), "Available Commands")
+}
+
 // TestConfigurationPrecedenceUsesFlagsThenEnvironmentThenExplicitFile proves typed Viper translation.
 func TestConfigurationPrecedenceUsesFlagsThenEnvironmentThenExplicitFile(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")

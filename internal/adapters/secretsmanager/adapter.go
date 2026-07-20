@@ -297,9 +297,10 @@ func classifyError(operation string, err error, mutation bool) *SafeError {
 		failure.requestID = requestError.ServiceRequestID()
 	}
 	var networkError net.Error
-	timedOut := errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout()
+	networkFailure := errors.As(err, &networkError)
+	timedOut := errors.Is(err, context.DeadlineExceeded) || networkFailure && networkError.Timeout()
 	failure.canceled = errors.Is(err, context.Canceled)
-	failure.ambiguous = mutation && (timedOut || failure.canceled)
+	failure.ambiguous = mutation && (timedOut || failure.canceled || networkFailure)
 
 	return failure
 }

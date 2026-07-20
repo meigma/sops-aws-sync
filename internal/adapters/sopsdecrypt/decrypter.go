@@ -19,7 +19,11 @@ import (
 // Decrypter converts encrypted SOPS JSON bytes into canonical domain values.
 type Decrypter struct {
 	maxEncryptedBytes int
+	decrypt           decryptFunction
 }
+
+// decryptFunction is the terminal non-context-aware SOPS binding seam.
+type decryptFunction func(encrypted []byte) ([]byte, error)
 
 // New constructs a SOPS JSON decrypter with a defensive input limit.
 func New(maxEncryptedBytes int) (*Decrypter, error) {
@@ -27,7 +31,7 @@ func New(maxEncryptedBytes int) (*Decrypter, error) {
 		return nil, errors.New("maximum encrypted bytes must be positive")
 	}
 
-	return &Decrypter{maxEncryptedBytes: maxEncryptedBytes}, nil
+	return &Decrypter{maxEncryptedBytes: maxEncryptedBytes, decrypt: decryptSOPSJSON}, nil
 }
 
 // decryptResult transports one terminal worker result without exposing plaintext.
@@ -47,7 +51,7 @@ func (decrypter *Decrypter) DecryptJSON(ctx context.Context, encrypted []byte) (
 	result := make(chan decryptResult, 1)
 	isolated := append([]byte(nil), encrypted...)
 	go func() {
-		result <- decryptAndCanonicalize(isolated)
+		result <- decrypter.decryptAndCanonicalize(isolated)
 	}()
 
 	select {
@@ -61,9 +65,14 @@ func (decrypter *Decrypter) DecryptJSON(ctx context.Context, encrypted []byte) (
 	}
 }
 
-// decryptAndCanonicalize performs the non-context-aware terminal SOPS call.
-func decryptAndCanonicalize(encrypted []byte) decryptResult {
-	plaintext, err := decrypt.DataWithFormat(encrypted, formats.Json)
+// decryptSOPSJSON invokes the stable non-context-aware SOPS binding.
+func decryptSOPSJSON(encrypted []byte) ([]byte, error) {
+	return decrypt.DataWithFormat(encrypted, formats.Json)
+}
+
+// decryptAndCanonicalize performs the terminal decrypt and strict JSON conversion.
+func (decrypter *Decrypter) decryptAndCanonicalize(encrypted []byte) decryptResult {
+	plaintext, err := decrypter.decrypt(encrypted)
 	if err != nil {
 		return decryptResult{err: errors.New("SOPS JSON decryption failed")}
 	}

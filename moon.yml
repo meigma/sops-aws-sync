@@ -34,7 +34,7 @@ fileGroups:
     - 'ghd.toml'
     - 'release-please-config.json'
     - '.release-please-manifest.json'
-    - '.github/workflows.disabled/**/*.yml'
+    - '.github/workflows/*.yml'
 
 workspace:
   inheritedTasks:

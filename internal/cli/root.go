@@ -105,7 +105,7 @@ func NewRootCommand(options Options) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
-			if command.Name() == commandVersion {
+			if command == command.Root() || command.Name() == commandVersion {
 				return nil
 			}
 			if err := initializeConfig(command, options.Viper, configPath); err != nil {

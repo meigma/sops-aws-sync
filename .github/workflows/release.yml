@@ -18,7 +18,7 @@ jobs:
     name: Resolve Release
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     outputs:
       tag: ${{ steps.release-tag.outputs.tag }}
       version: ${{ steps.release-tag.outputs.version }}

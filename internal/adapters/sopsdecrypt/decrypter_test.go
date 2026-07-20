@@ -3,7 +3,9 @@ package sopsdecrypt
 import (
 	"context"
 	"os"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,4 +70,32 @@ func TestDecryptJSONDiscardsCanceledWork(t *testing.T) {
 	cancel()
 	_, err = decrypter.DecryptJSON(ctx, []byte(`{}`))
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// TestDecryptJSONCancellationTerminatesTheWorkerProcess proves in-flight cancellation is terminal.
+func TestDecryptJSONCancellationTerminatesTheWorkerProcess(t *testing.T) {
+	if os.Getenv("SOPS_AWS_SYNC_CANCELLATION_CHILD") == "1" {
+		decrypter := &Decrypter{
+			maxEncryptedBytes: 1024,
+			decrypt: func(_ []byte) ([]byte, error) {
+				select {}
+			},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		_, err := decrypter.DecryptJSON(ctx, []byte(`{}`))
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		return
+	}
+	processContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		processContext,
+		os.Args[0],
+		"-test.run=^TestDecryptJSONCancellationTerminatesTheWorkerProcess$",
+	)
+	command.Env = append(os.Environ(), "SOPS_AWS_SYNC_CANCELLATION_CHILD=1")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.NoError(t, processContext.Err())
 }

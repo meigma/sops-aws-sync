@@ -2,10 +2,19 @@ package secretsmanager
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/stretchr/testify/assert"
@@ -140,6 +149,73 @@ func TestMutationTimeoutIsTypedAmbiguous(t *testing.T) {
 	assert.True(t, safe.Ambiguous())
 	assert.Equal(t, "AWS create failed", safe.Error())
 	assert.NotContains(t, safe.Error(), context.DeadlineExceeded.Error())
+}
+
+// TestMutationConnectionLossIsTypedAmbiguous proves non-timeout transport loss is re-observed.
+func TestMutationConnectionLossIsTypedAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	connectionLoss := &net.OpError{Op: "write", Net: "tcp", Err: errors.New("connection reset sentinel")}
+	safe := classifyError("update", connectionLoss, true)
+	assert.True(t, safe.Ambiguous())
+	assert.False(t, safe.Canceled())
+	assert.NotContains(t, safe.Error(), "connection reset sentinel")
+}
+
+// TestSDKRetriesTransientCreateWithTheSameToken proves bounded request-level retry behavior.
+func TestSDKRetriesTransientCreateWithTheSameToken(t *testing.T) {
+	t.Parallel()
+
+	const expectedAttempts = 3
+	var attempts atomic.Int32
+	var lock sync.Mutex
+	tokens := make([]string, 0, expectedAttempts)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			// ClientRequestToken is the logical-write idempotency token.
+			ClientRequestToken string `json:"ClientRequestToken"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		lock.Lock()
+		tokens = append(tokens, payload.ClientRequestToken)
+		lock.Unlock()
+		if attempts.Add(1) < expectedAttempts {
+			response.Header().Set("X-Amzn-Errortype", "InternalServiceError")
+			response.WriteHeader(http.StatusInternalServerError)
+			_, _ = response.Write([]byte(`{"__type":"InternalServiceError","message":"transient sentinel"}`))
+			return
+		}
+		response.Header().Set("Content-Type", "application/x-amz-json-1.1")
+		_, _ = response.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	awsConfiguration := aws.Config{
+		Region:       "us-east-1",
+		BaseEndpoint: aws.String(server.URL),
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+		HTTPClient:   server.Client(),
+		Retryer: func() aws.Retryer {
+			return retry.NewStandard(func(options *retry.StandardOptions) {
+				options.MaxAttempts = expectedAttempts
+				options.Backoff = retry.BackoffDelayerFunc(func(_ int, _ error) (time.Duration, error) {
+					return 0, nil
+				})
+			})
+		},
+	}
+	adapter, err := New(awssm.NewFromConfig(awsConfiguration), time.Second)
+	require.NoError(t, err)
+	desired, scope := adapterDesired(t)
+	expectedToken := "0123456789abcdef0123456789abcdef"
+
+	require.NoError(t, adapter.Create(context.Background(), desired, scope, expectedToken))
+	assert.EqualValues(t, expectedAttempts, attempts.Load())
+	lock.Lock()
+	defer lock.Unlock()
+	assert.Equal(t, []string{expectedToken, expectedToken, expectedToken}, tokens)
 }
 
 // adapterDesired constructs one owned test secret and scope.

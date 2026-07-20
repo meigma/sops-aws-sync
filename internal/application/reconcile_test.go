@@ -33,6 +33,7 @@ func (source *fakeSource) Load(
 // fakeDecrypter returns one fixed canonical domain value.
 type fakeDecrypter struct {
 	value domain.SecretValue
+	err   error
 }
 
 // DecryptJSON returns the configured canonical value.
@@ -40,7 +41,7 @@ func (decrypter *fakeDecrypter) DecryptJSON(
 	_ context.Context,
 	_ []byte,
 ) (domain.SecretValue, error) {
-	return decrypter.value, nil
+	return decrypter.value, decrypter.err
 }
 
 // sequenceTokens records deterministic fresh token allocation.
@@ -82,7 +83,9 @@ type memorySecrets struct {
 	tokens          []string
 	ambiguousApply  bool
 	ambiguousBefore bool
+	ambiguousUpdate bool
 	observeErr      error
+	observeCalls    int
 }
 
 // Observe returns the current direct desired-name evidence.
@@ -90,6 +93,7 @@ func (secrets *memorySecrets) Observe(
 	_ context.Context,
 	_ domain.SecretName,
 ) (domain.ObservedEvidence, error) {
+	secrets.observeCalls++
 	return secrets.evidence, secrets.observeErr
 }
 
@@ -123,18 +127,22 @@ func (secrets *memorySecrets) Update(
 	secrets.updateCalls++
 	secrets.tokens = append(secrets.tokens, token)
 	secrets.evidence = ownedApplicationEvidence(desired, secrets.scope)
+	if secrets.ambiguousUpdate && secrets.updateCalls == 1 {
+		return ambiguousMutationError{}
+	}
 
 	return nil
 }
 
 // appTestContext groups one service and its observable fake collaborators.
 type appTestContext struct {
-	service *application.Service
-	secrets *memorySecrets
-	tokens  *sequenceTokens
-	desired domain.DesiredSecret
-	input   application.ReconcileInput
-	logs    *bytes.Buffer
+	service   *application.Service
+	decrypter *fakeDecrypter
+	secrets   *memorySecrets
+	tokens    *sequenceTokens
+	desired   domain.DesiredSecret
+	input     application.ReconcileInput
+	logs      *bytes.Buffer
 }
 
 // TestSyncCreateUpdateAndNoOp proves the supported Phase 2 vertical slice.
@@ -215,6 +223,38 @@ func TestSyncRetriesAmbiguousLogicalWriteWithSameToken(t *testing.T) {
 	assert.Equal(t, testContext.secrets.tokens[0], testContext.secrets.tokens[1])
 }
 
+// TestSyncResolvesAmbiguousUpdateWithoutBlindRetry proves lost update responses re-observe first.
+func TestSyncResolvesAmbiguousUpdateWithoutBlindRetry(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	testContext.secrets.scope = applicationScope(t)
+	testContext.secrets.evidence = ownedApplicationEvidenceWithValue(
+		testContext.desired,
+		testContext.secrets.scope,
+		`{"password":"old"}`,
+	)
+	testContext.secrets.ambiguousUpdate = true
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	require.NoError(t, err)
+	assert.Equal(t, 1, testContext.secrets.updateCalls)
+	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncCancellationStopsBeforeMutation proves parent interruption maps to exit 130 behavior.
+func TestSyncCancellationStopsBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := testContext.service.Sync(ctx, testContext.input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeInterrupted, outcome.Kind())
+	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
+}
+
 // TestSyncConflictPerformsNoMutation proves same-name ownership conflicts fail closed.
 func TestSyncConflictPerformsNoMutation(t *testing.T) {
 	t.Parallel()
@@ -226,6 +266,21 @@ func TestSyncConflictPerformsNoMutation(t *testing.T) {
 	require.ErrorAs(t, err, &outcome)
 	assert.Equal(t, application.OutcomeConflict, outcome.Kind())
 	assert.Equal(t, "conflict", report.Status)
+	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
+}
+
+// TestInvalidDesiredStatePerformsNoAWSCall proves complete desired validation precedes observation.
+func TestInvalidDesiredStatePerformsNoAWSCall(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	testContext.decrypter.err = errors.New("decryption sentinel")
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeInvalid, outcome.Kind())
+	assert.Equal(t, "invalid", report.Status)
+	assert.Zero(t, testContext.secrets.observeCalls)
 	assert.Zero(t, testContext.secrets.createCalls+testContext.secrets.updateCalls)
 }
 
@@ -278,14 +333,16 @@ func newAppTestContext(t *testing.T) *appTestContext {
 	tokens := &sequenceTokens{}
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	service, err := application.NewService(source, &fakeDecrypter{value: value}, secrets, tokens, logger, "test")
+	decrypter := &fakeDecrypter{value: value}
+	service, err := application.NewService(source, decrypter, secrets, tokens, logger, "test")
 	require.NoError(t, err)
 
 	return &appTestContext{
-		service: service,
-		secrets: secrets,
-		tokens:  tokens,
-		desired: desired,
+		service:   service,
+		decrypter: decrypter,
+		secrets:   secrets,
+		tokens:    tokens,
+		desired:   desired,
 		input: application.ReconcileInput{
 			RepositoryID: "meigma/example", Revision: "HEAD", SourceRoot: "secrets",
 			SecretPrefix: "/acme/payments", VerificationTimeout: time.Second,
