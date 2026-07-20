@@ -1,8 +1,8 @@
-site_name: template-go
-site_description: Meigma Go repository template
-site_url: https://meigma.github.io/template-go/
-repo_name: meigma/template-go
-repo_url: https://github.com/meigma/template-go
+site_name: sops-aws-sync
+site_description: Reconcile committed SOPS JSON with AWS Secrets Manager
+site_url: https://meigma.github.io/sops-aws-sync/
+repo_name: meigma/sops-aws-sync
+repo_url: https://github.com/meigma/sops-aws-sync
 edit_uri: edit/master/docs/docs/
 docs_dir: docs
 site_dir: build

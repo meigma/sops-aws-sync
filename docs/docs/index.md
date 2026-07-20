@@ -1,16 +1,9 @@
 ---
-title: template-go Docs
-slug: /
-description: Starting point for Meigma Go projects.
+title: sops-aws-sync Docs
 ---
 
-# template-go Docs
+# sops-aws-sync
 
-This repository is the starting point for Meigma Go projects.
+`sops-aws-sync` reconciles committed SOPS-encrypted JSON documents with AWS Secrets Manager through a safe, deterministic Go CLI.
 
-Generated projects should replace this page with project-specific documentation after bootstrapping:
-
-- project summary
-- quick start
-- operating notes
-- support and security paths
+The current Phase 2 implementation supports direct desired-name planning and create, update, no-op, and post-apply verification. Run `sops-aws-sync plan --help` or `sops-aws-sync sync --help` for the complete typed configuration surface.

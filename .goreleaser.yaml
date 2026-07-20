@@ -1,15 +1,15 @@
 version: 2
 
-project_name: template-go
+project_name: sops-aws-sync
 
 before:
   hooks:
     - go test ./...
 
 builds:
-  - id: template-go
-    main: ./cmd/template-go
-    binary: template-go
+  - id: sops-aws-sync
+    main: ./cmd/sops-aws-sync
+    binary: sops-aws-sync
     env:
       - CGO_ENABLED=0
     goos:
@@ -28,9 +28,9 @@ builds:
     mod_timestamp: '{{ .CommitTimestamp }}'
 
 archives:
-  - id: template-go
+  - id: sops-aws-sync
     ids:
-      - template-go
+      - sops-aws-sync
     formats:
       - binary
     name_template: >-
