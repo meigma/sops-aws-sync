@@ -23,9 +23,9 @@ import (
 
 // TestAWSSandboxCompleteLifecycleAndVerification proves the opt-in genuine V1 CLI lifecycle.
 func TestAWSSandboxCompleteLifecycleAndVerification(t *testing.T) {
-	prefix := strings.TrimSuffix(os.Getenv("SOPS_AWS_SYNC_AWS_SANDBOX_PREFIX"), "/")
+	basePrefix := strings.TrimSuffix(os.Getenv("SOPS_AWS_SYNC_AWS_SANDBOX_PREFIX"), "/")
 	region := os.Getenv("SOPS_AWS_SYNC_AWS_SANDBOX_REGION")
-	if prefix == "" || region == "" {
+	if basePrefix == "" || region == "" {
 		t.Skip("set SOPS_AWS_SYNC_AWS_SANDBOX_PREFIX and SOPS_AWS_SYNC_AWS_SANDBOX_REGION")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -36,7 +36,8 @@ func TestAWSSandboxCompleteLifecycleAndVerification(t *testing.T) {
 	adapter, err := secretsadapter.New(client, 30*time.Second)
 	require.NoError(t, err)
 	nameSuffix := sandboxToken(t)
-	secretName, err := domain.NewSecretName(prefix + "/phase3-" + nameSuffix)
+	prefix := basePrefix + "/phase3-" + nameSuffix
+	secretName, err := domain.NewSecretName(prefix + "/secret")
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -53,7 +54,7 @@ func TestAWSSandboxCompleteLifecycleAndVerification(t *testing.T) {
 	source := &fakeSource{snapshot: application.SourceSnapshot{
 		Revision: revision,
 		Documents: []application.EncryptedDocument{
-			{Path: "secrets/phase3-" + nameSuffix + ".sops.json", Data: []byte("encrypted")},
+			{Path: "secrets/secret.sops.json", Data: []byte("encrypted")},
 		},
 	}}
 	decrypter := &fakeDecrypter{value: initialValue}
