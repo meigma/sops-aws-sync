@@ -123,6 +123,7 @@ func TestBuildPlanAndTransitions(t *testing.T) {
 	updateDesired := newDesiredSecret(t, "/acme/payments/b", `{"value":"b"}`)
 	noOpDesired := newDesiredSecret(t, "/acme/payments/c", `{"value":"c"}`)
 	restoreDesired := newDesiredSecret(t, "/acme/payments/d", `{"value":"d"}`)
+	removedDesired := newDesiredSecret(t, "/acme/payments/e", `{"value":"e"}`)
 	old := `{"value":"old"}`
 	equal := string(noOpDesired.Value().CopyCanonicalJSON())
 	desired := []domain.DesiredSecret{restoreDesired, noOpDesired, updateDesired, createDesired}
@@ -131,14 +132,20 @@ func TestBuildPlanAndTransitions(t *testing.T) {
 		domain.ClassifyDirect(updateDesired, scope, ownedEvidence(scope, updateDesired, &old, false)),
 		domain.ClassifyDirect(noOpDesired, scope, ownedEvidence(scope, noOpDesired, &equal, false)),
 		domain.ClassifyDirect(restoreDesired, scope, scheduledEvidence(scope, restoreDesired)),
+		domain.ClassifyManaged(
+			removedDesired.Name(),
+			scope,
+			ownedEvidence(scope, removedDesired, nil, false),
+		),
 	}
 	plan, err := domain.BuildPlan(desired, observed)
 	require.NoError(t, err)
 	operations := plan.Operations()
-	require.Len(t, operations, 3)
+	require.Len(t, operations, 4)
 	assert.Equal(t, domain.DecisionRestore, operations[0].Kind())
 	assert.Equal(t, domain.DecisionCreate, operations[1].Kind())
 	assert.Equal(t, domain.DecisionUpdate, operations[2].Kind())
+	assert.Equal(t, domain.DecisionScheduleDeletion, operations[3].Kind())
 	assert.Equal(t, 1, plan.UnchangedCount())
 	require.Error(t, plan.ValidatePhaseTwo())
 
@@ -148,6 +155,79 @@ func TestBuildPlanAndTransitions(t *testing.T) {
 	createdValue := string(createDesired.Value().CopyCanonicalJSON())
 	created := domain.ClassifyDirect(createDesired, scope, ownedEvidence(scope, createDesired, &createdValue, false))
 	assert.Equal(t, domain.TransitionSucceeded, domain.ResolveAmbiguous(createOperation, created))
+
+	deleteOperation := operations[3]
+	assert.Equal(t, domain.TransitionApply, domain.CheckPrecondition(deleteOperation, observed[4]))
+	assert.Equal(t, domain.TransitionInconclusive, domain.ResolveAmbiguous(deleteOperation, observed[4]))
+	deleted := domain.ClassifyManaged(removedDesired.Name(), scope, scheduledEvidence(scope, removedDesired))
+	assert.Equal(t, domain.TransitionSucceeded, domain.ResolveAmbiguous(deleteOperation, deleted))
+}
+
+// TestClassifyManagedRequiresExactScopeAndValidSource proves discovery filters never define ownership.
+func TestClassifyManagedRequiresExactScopeAndValidSource(t *testing.T) {
+	t.Parallel()
+
+	scope := newScope(t)
+	secret := newDesiredSecret(t, "/acme/payments/removed", `{"value":"removed"}`)
+	tests := []struct {
+		name     string
+		evidence domain.ObservedEvidence
+		want     domain.ObservedKind
+	}{
+		{name: "exact active member", evidence: ownedEvidence(scope, secret, nil, false), want: domain.ObservedOwnedActiveUnknown},
+		{name: "missing reserved tags", evidence: domain.ObservedEvidence{Exists: true}, want: domain.ObservedForeign},
+		{
+			name: "malformed source digest",
+			evidence: domain.ObservedEvidence{Exists: true, ReservedTags: map[string]string{
+				domain.ManagedByTagKey: domain.ManagedByTagValue,
+				domain.ScopeTagKey:     scope.Value(),
+				domain.SourceTagKey:    "not-a-digest",
+			}},
+			want: domain.ObservedInvalid,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, test.want, domain.ClassifyManaged(secret.Name(), scope, test.evidence).Kind())
+		})
+	}
+}
+
+// FuzzBuildPlanOrdering seeds planner invariants across mixed create and update states.
+func FuzzBuildPlanOrdering(f *testing.F) {
+	f.Add(uint8(0))
+	f.Add(uint8(3))
+	f.Fuzz(func(t *testing.T, mask uint8) {
+		scope := newScope(t)
+		first := newDesiredSecret(t, "/acme/payments/a", `{"value":"a"}`)
+		second := newDesiredSecret(t, "/acme/payments/b", `{"value":"b"}`)
+		desired := []domain.DesiredSecret{second, first}
+		observed := make([]domain.ObservedSlot, 0, 2)
+		for index, secret := range []domain.DesiredSecret{first, second} {
+			if mask&(1<<index) == 0 {
+				observed = append(observed, domain.ClassifyDirect(secret, scope, domain.ObservedEvidence{}))
+				continue
+			}
+			old := `{"value":"old"}`
+			observed = append(observed, domain.ClassifyDirect(secret, scope, ownedEvidence(scope, secret, &old, false)))
+		}
+		plan, err := domain.BuildPlan(desired, observed)
+		require.NoError(t, err)
+		operations := plan.Operations()
+		for index := 1; index < len(operations); index++ {
+			left := operations[index-1]
+			right := operations[index]
+			assert.False(t,
+				left.Kind() == domain.DecisionUpdate && right.Kind() == domain.DecisionCreate,
+				"create operations must precede updates",
+			)
+			if left.Kind() == right.Kind() {
+				assert.Less(t, left.Name().Value(), right.Name().Value())
+			}
+		}
+	})
 }
 
 // newDesiredSecret builds one validated test desired value.

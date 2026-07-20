@@ -51,6 +51,11 @@ func (failure *loadError) ConfigurationFailure() bool {
 
 // Client is the consumed AWS Secrets Manager SDK surface.
 type Client interface {
+	ListSecrets(
+		ctx context.Context,
+		input *awssm.ListSecretsInput,
+		optFns ...func(*awssm.Options),
+	) (*awssm.ListSecretsOutput, error)
 	DescribeSecret(
 		ctx context.Context,
 		input *awssm.DescribeSecretInput,
@@ -71,9 +76,19 @@ type Client interface {
 		input *awssm.PutSecretValueInput,
 		optFns ...func(*awssm.Options),
 	) (*awssm.PutSecretValueOutput, error)
+	RestoreSecret(
+		ctx context.Context,
+		input *awssm.RestoreSecretInput,
+		optFns ...func(*awssm.Options),
+	) (*awssm.RestoreSecretOutput, error)
+	DeleteSecret(
+		ctx context.Context,
+		input *awssm.DeleteSecretInput,
+		optFns ...func(*awssm.Options),
+	) (*awssm.DeleteSecretOutput, error)
 }
 
-// Adapter performs direct desired-name observation and Phase 2 writes.
+// Adapter performs paginated scope discovery, direct observation, and lifecycle writes.
 type Adapter struct {
 	client           Client
 	operationTimeout time.Duration
@@ -145,6 +160,45 @@ func Load(ctx context.Context, configuration LoadOptions) (*Adapter, error) {
 	return adapter, nil
 }
 
+// Discover returns every paginated reserved-tag candidate for pure exact-scope filtering.
+func (adapter *Adapter) Discover(ctx context.Context) ([]domain.DiscoveryEvidence, error) {
+	discovered := make([]domain.DiscoveryEvidence, 0)
+	var nextToken *string
+	for {
+		callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
+		output, err := adapter.client.ListSecrets(callContext, &awssm.ListSecretsInput{
+			Filters: []types.Filter{
+				{Key: types.FilterNameStringTypeTagKey, Values: []string{domain.ManagedByTagKey}},
+				{Key: types.FilterNameStringTypeTagValue, Values: []string{domain.ManagedByTagValue}},
+			},
+			IncludePlannedDeletion: aws.Bool(true),
+			NextToken:              nextToken,
+		})
+		cancel()
+		if err != nil {
+			return nil, classifyError("list", err, false)
+		}
+		for _, entry := range output.SecretList {
+			evidence, evidenceErr := domain.NewDiscoveryEvidence(
+				aws.ToString(entry.Name),
+				domain.ObservedEvidence{
+					Exists:               true,
+					ScheduledForDeletion: entry.DeletedDate != nil,
+					ReservedTags:         reservedTags(entry.Tags),
+				},
+			)
+			if evidenceErr != nil {
+				return nil, errors.New("discovery returned an invalid secret name")
+			}
+			discovered = append(discovered, evidence)
+		}
+		nextToken = output.NextToken
+		if nextToken == nil || aws.ToString(nextToken) == "" {
+			return discovered, nil
+		}
+	}
+}
+
 // Observe classifies direct metadata before loading an owned current payload.
 func (adapter *Adapter) Observe(
 	ctx context.Context,
@@ -152,24 +206,14 @@ func (adapter *Adapter) Observe(
 	scope domain.ScopeIdentity,
 ) (domain.ObservedEvidence, error) {
 	name := desired.Name()
-	callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
-	defer cancel()
-	description, err := adapter.client.DescribeSecret(
-		callContext,
-		&awssm.DescribeSecretInput{SecretId: aws.String(name.Value())},
-	)
+	evidence, err := adapter.observeMetadata(ctx, name)
 	if err != nil {
-		var notFound *types.ResourceNotFoundException
-		if errors.As(err, &notFound) {
-			return domain.ObservedEvidence{}, nil
-		}
-		return domain.ObservedEvidence{}, classifyError("describe", err, false)
+		return domain.ObservedEvidence{}, err
 	}
-	evidence := evidenceFromDescription(description)
 	if !domain.CurrentPayloadRequired(desired, scope, evidence) {
 		return evidence, nil
 	}
-	callContext, cancel = context.WithTimeout(ctx, adapter.operationTimeout)
+	callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
 	defer cancel()
 	current, err := adapter.client.GetSecretValue(callContext, &awssm.GetSecretValueInput{
 		SecretId:     aws.String(name.Value()),
@@ -190,15 +234,39 @@ func (adapter *Adapter) Observe(
 	return evidence, nil
 }
 
+// ObserveManaged directly observes one discovered candidate without loading its payload.
+func (adapter *Adapter) ObserveManaged(
+	ctx context.Context,
+	name domain.SecretName,
+) (domain.ObservedEvidence, error) {
+	return adapter.observeMetadata(ctx, name)
+}
+
+// observeMetadata normalizes one direct DescribeSecret response.
+func (adapter *Adapter) observeMetadata(
+	ctx context.Context,
+	name domain.SecretName,
+) (domain.ObservedEvidence, error) {
+	callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
+	defer cancel()
+	description, err := adapter.client.DescribeSecret(
+		callContext,
+		&awssm.DescribeSecretInput{SecretId: aws.String(name.Value())},
+	)
+	if err != nil {
+		var notFound *types.ResourceNotFoundException
+		if errors.As(err, &notFound) {
+			return domain.ObservedEvidence{}, nil
+		}
+		return domain.ObservedEvidence{}, classifyError("describe", err, false)
+	}
+
+	return evidenceFromDescription(description), nil
+}
+
 // evidenceFromDescription normalizes SDK metadata without exposing SDK types to the domain.
 func evidenceFromDescription(description *awssm.DescribeSecretOutput) domain.ObservedEvidence {
-	reservedTags := make(map[string]string, reservedTagCount)
-	for _, tag := range description.Tags {
-		key := aws.ToString(tag.Key)
-		if key == domain.ManagedByTagKey || key == domain.ScopeTagKey || key == domain.SourceTagKey {
-			reservedTags[key] = aws.ToString(tag.Value)
-		}
-	}
+	tags := reservedTags(description.Tags)
 	currentVersions := make([]string, 0, 1)
 	rotationInProgress := false
 	for version, stages := range description.VersionIdsToStages {
@@ -216,7 +284,7 @@ func evidenceFromDescription(description *awssm.DescribeSecretOutput) domain.Obs
 	evidence := domain.ObservedEvidence{
 		Exists:               true,
 		ScheduledForDeletion: description.DeletedDate != nil,
-		ReservedTags:         reservedTags,
+		ReservedTags:         tags,
 		OwningService:        owner,
 		RotationEnabled:      aws.ToBool(description.RotationEnabled),
 		RotationInProgress:   rotationInProgress,
@@ -228,6 +296,19 @@ func evidenceFromDescription(description *awssm.DescribeSecretOutput) domain.Obs
 	}
 
 	return evidence
+}
+
+// reservedTags copies only the domain-owned tag keys from AWS metadata.
+func reservedTags(tags []types.Tag) map[string]string {
+	reserved := make(map[string]string, reservedTagCount)
+	for _, tag := range tags {
+		key := aws.ToString(tag.Key)
+		if key == domain.ManagedByTagKey || key == domain.ScopeTagKey || key == domain.SourceTagKey {
+			reserved[key] = aws.ToString(tag.Value)
+		}
+	}
+
+	return reserved
 }
 
 // Create writes one canonical value with the exact reserved ownership tags.
@@ -270,6 +351,39 @@ func (adapter *Adapter) Update(ctx context.Context, desired domain.DesiredSecret
 	})
 	if err != nil {
 		return classifyError("update", err, true)
+	}
+
+	return nil
+}
+
+// Restore cancels scheduled deletion for one exactly owned desired name.
+func (adapter *Adapter) Restore(ctx context.Context, name domain.SecretName) error {
+	callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
+	defer cancel()
+	_, err := adapter.client.RestoreSecret(callContext, &awssm.RestoreSecretInput{
+		SecretId: aws.String(name.Value()),
+	})
+	if err != nil {
+		return classifyError("restore", err, true)
+	}
+
+	return nil
+}
+
+// ScheduleDeletion starts a bounded recovery-window deletion without force deletion.
+func (adapter *Adapter) ScheduleDeletion(
+	ctx context.Context,
+	name domain.SecretName,
+	recoveryWindowDays int32,
+) error {
+	callContext, cancel := context.WithTimeout(ctx, adapter.operationTimeout)
+	defer cancel()
+	_, err := adapter.client.DeleteSecret(callContext, &awssm.DeleteSecretInput{
+		SecretId:             aws.String(name.Value()),
+		RecoveryWindowInDays: aws.Int64(int64(recoveryWindowDays)),
+	})
+	if err != nil {
+		return classifyError("schedule-deletion", err, true)
 	}
 
 	return nil

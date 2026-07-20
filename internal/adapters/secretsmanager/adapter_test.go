@@ -25,6 +25,10 @@ import (
 
 // fakeClient records consumed AWS requests and returns configured responses.
 type fakeClient struct {
+	listOutputs    []*awssm.ListSecretsOutput
+	listInputs     []*awssm.ListSecretsInput
+	listErr        error
+	listCalls      int
 	describeOutput *awssm.DescribeSecretOutput
 	describeErr    error
 	getOutput      *awssm.GetSecretValueOutput
@@ -33,7 +37,62 @@ type fakeClient struct {
 	createErr      error
 	putInput       *awssm.PutSecretValueInput
 	putErr         error
+	restoreInput   *awssm.RestoreSecretInput
+	restoreErr     error
+	deleteInput    *awssm.DeleteSecretInput
+	deleteErr      error
 	getCalls       int
+}
+
+// ListSecrets returns configured paginated scope candidates.
+func (client *fakeClient) ListSecrets(
+	_ context.Context,
+	input *awssm.ListSecretsInput,
+	_ ...func(*awssm.Options),
+) (*awssm.ListSecretsOutput, error) {
+	client.listInputs = append(client.listInputs, input)
+	if client.listErr != nil {
+		return nil, client.listErr
+	}
+	if client.listCalls < len(client.listOutputs) {
+		output := client.listOutputs[client.listCalls]
+		client.listCalls++
+		return output, nil
+	}
+
+	return &awssm.ListSecretsOutput{}, nil
+}
+
+// TestDiscoverPaginatesPlannedDeletionCandidates proves list filters remain an optimization only.
+func TestDiscoverPaginatesPlannedDeletionCandidates(t *testing.T) {
+	t.Parallel()
+
+	deletedAt := time.Now()
+	client := &fakeClient{listOutputs: []*awssm.ListSecretsOutput{
+		{
+			SecretList: []types.SecretListEntry{{
+				Name: aws.String("/acme/payments/removed"), DeletedDate: &deletedAt,
+				Tags: []types.Tag{
+					{Key: aws.String(domain.ManagedByTagKey), Value: aws.String(domain.ManagedByTagValue)},
+					{Key: aws.String(domain.ScopeTagKey), Value: aws.String("scope-sentinel")},
+				},
+			}},
+			NextToken: aws.String("page-2"),
+		},
+		{SecretList: []types.SecretListEntry{{Name: aws.String("/acme/payments/other")}}},
+	}}
+	adapter, err := New(client, time.Second)
+	require.NoError(t, err)
+
+	discovered, err := adapter.Discover(context.Background())
+	require.NoError(t, err)
+	require.Len(t, discovered, 2)
+	assert.Equal(t, "/acme/payments/removed", discovered[0].Name.Value())
+	assert.True(t, discovered[0].Evidence.ScheduledForDeletion)
+	assert.Equal(t, "scope-sentinel", discovered[0].Evidence.ReservedTags[domain.ScopeTagKey])
+	require.Len(t, client.listInputs, 2)
+	assert.True(t, aws.ToBool(client.listInputs[0].IncludePlannedDeletion))
+	assert.Equal(t, "page-2", aws.ToString(client.listInputs[1].NextToken))
 }
 
 // DescribeSecret returns configured direct metadata evidence.
@@ -75,6 +134,28 @@ func (client *fakeClient) PutSecretValue(
 	client.putInput = input
 
 	return &awssm.PutSecretValueOutput{}, client.putErr
+}
+
+// RestoreSecret records one lifecycle restore request.
+func (client *fakeClient) RestoreSecret(
+	_ context.Context,
+	input *awssm.RestoreSecretInput,
+	_ ...func(*awssm.Options),
+) (*awssm.RestoreSecretOutput, error) {
+	client.restoreInput = input
+
+	return &awssm.RestoreSecretOutput{}, client.restoreErr
+}
+
+// DeleteSecret records one recovery-window deletion request.
+func (client *fakeClient) DeleteSecret(
+	_ context.Context,
+	input *awssm.DeleteSecretInput,
+	_ ...func(*awssm.Options),
+) (*awssm.DeleteSecretOutput, error) {
+	client.deleteInput = input
+
+	return &awssm.DeleteSecretOutput{}, client.deleteErr
 }
 
 // TestObserveNormalizesDirectOwnedString proves exact tags and AWSCURRENT evidence translation.
@@ -211,6 +292,26 @@ func TestCreateAndUpdateUseCanonicalValuesTokensAndReservedTags(t *testing.T) {
 	assert.Equal(t, desired.Name().Value(), aws.ToString(client.putInput.SecretId))
 	assert.Equal(t, string(desired.Value().CopyCanonicalJSON()), aws.ToString(client.putInput.SecretString))
 	assert.Equal(t, []string{awsCurrent}, client.putInput.VersionStages)
+}
+
+// TestRestoreAndScheduleDeletionUseSafeLifecycleRequests proves force deletion is impossible.
+func TestRestoreAndScheduleDeletionUseSafeLifecycleRequests(t *testing.T) {
+	t.Parallel()
+
+	desired, _ := adapterDesired(t)
+	client := &fakeClient{}
+	adapter, err := New(client, time.Second)
+	require.NoError(t, err)
+
+	require.NoError(t, adapter.Restore(context.Background(), desired.Name()))
+	require.NotNil(t, client.restoreInput)
+	assert.Equal(t, desired.Name().Value(), aws.ToString(client.restoreInput.SecretId))
+
+	require.NoError(t, adapter.ScheduleDeletion(context.Background(), desired.Name(), 14))
+	require.NotNil(t, client.deleteInput)
+	assert.Equal(t, desired.Name().Value(), aws.ToString(client.deleteInput.SecretId))
+	assert.EqualValues(t, 14, aws.ToInt64(client.deleteInput.RecoveryWindowInDays))
+	assert.Nil(t, client.deleteInput.ForceDeleteWithoutRecovery)
 }
 
 // TestMutationTimeoutIsTypedAmbiguous proves lost-response evidence is never a raw error string.
