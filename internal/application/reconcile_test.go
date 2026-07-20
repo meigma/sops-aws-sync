@@ -76,10 +76,23 @@ func (ambiguousMutationError) Canceled() bool {
 
 // memorySecrets models direct desired-name AWS evidence and mutation calls.
 type memorySecrets struct {
+	discovered      []domain.DiscoveryEvidence
+	discoveries     [][]domain.DiscoveryEvidence
+	discoverCalls   int
+	managedEvidence map[string]domain.ObservedEvidence
+	managedCalls    map[string]int
 	evidence        domain.ObservedEvidence
 	scope           domain.ScopeIdentity
 	createCalls     int
 	updateCalls     int
+	restoreCalls    int
+	deleteCalls     int
+	deletedDays     []int32
+	operations      []string
+	updateErr       error
+	deleteErr       error
+	ambiguousDelete bool
+	deleteNoEffect  bool
 	tokens          []string
 	ambiguousApply  bool
 	ambiguousBefore bool
@@ -97,6 +110,88 @@ type orderingSecrets struct {
 	observeCalls map[string]int
 	operations   []string
 	driftName    string
+}
+
+// restoreRebuildSecrets introduces unrelated drift after one restore has been applied.
+type restoreRebuildSecrets struct {
+	current      map[string]domain.ObservedEvidence
+	observeCalls map[string]int
+	driftName    string
+	operations   []string
+}
+
+// Discover returns no removed scope members for this direct desired-name scenario.
+func (secrets *restoreRebuildSecrets) Discover(_ context.Context) ([]domain.DiscoveryEvidence, error) {
+	return nil, nil
+}
+
+// Observe introduces unrelated desired-name drift after initial planning.
+func (secrets *restoreRebuildSecrets) Observe(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+) (domain.ObservedEvidence, error) {
+	name := desired.Name().Value()
+	call := secrets.observeCalls[name]
+	secrets.observeCalls[name]++
+	if name == secrets.driftName && call == 1 {
+		secrets.current[name] = ownedApplicationEvidenceWithValue(desired, scope, `{"value":"old"}`)
+	}
+
+	return secrets.current[name], nil
+}
+
+// ObserveManaged is unused because this fake returns no discovered scope members.
+func (secrets *restoreRebuildSecrets) ObserveManaged(
+	_ context.Context,
+	_ domain.SecretName,
+) (domain.ObservedEvidence, error) {
+	return domain.ObservedEvidence{}, nil
+}
+
+// Create records an unexpected create if restore-cycle validation fails.
+func (secrets *restoreRebuildSecrets) Create(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	_ domain.ScopeIdentity,
+	_ string,
+) error {
+	secrets.operations = append(secrets.operations, "create:"+desired.Name().Value())
+	return nil
+}
+
+// Update records an unexpected update if restore-cycle validation fails.
+func (secrets *restoreRebuildSecrets) Update(
+	_ context.Context,
+	desired domain.DesiredSecret,
+	_ string,
+) error {
+	secrets.operations = append(secrets.operations, "update:"+desired.Name().Value())
+	return nil
+}
+
+// Restore records the applied restore and exposes its prior current value.
+func (secrets *restoreRebuildSecrets) Restore(_ context.Context, name domain.SecretName) error {
+	secrets.operations = append(secrets.operations, "restore:"+name.Value())
+	evidence := secrets.current[name.Value()]
+	evidence.ScheduledForDeletion = false
+	secrets.current[name.Value()] = evidence
+	return nil
+}
+
+// ScheduleDeletion records an unexpected deletion if restore-cycle validation fails.
+func (secrets *restoreRebuildSecrets) ScheduleDeletion(
+	_ context.Context,
+	name domain.SecretName,
+	_ int32,
+) error {
+	secrets.operations = append(secrets.operations, "schedule-deletion:"+name.Value())
+	return nil
+}
+
+// Discover returns no removed scope members for this desired-name ordering fake.
+func (secrets *orderingSecrets) Discover(_ context.Context) ([]domain.DiscoveryEvidence, error) {
+	return nil, nil
 }
 
 // Observe introduces one create-to-update transition and otherwise returns stored evidence.
@@ -145,6 +240,39 @@ func (secrets *orderingSecrets) Update(
 	return nil
 }
 
+// ObserveManaged is unused because this fake returns no discovered scope members.
+func (secrets *orderingSecrets) ObserveManaged(
+	_ context.Context,
+	_ domain.SecretName,
+) (domain.ObservedEvidence, error) {
+	return domain.ObservedEvidence{}, nil
+}
+
+// Restore is unused by the create/update ordering scenario.
+func (secrets *orderingSecrets) Restore(_ context.Context, _ domain.SecretName) error {
+	return nil
+}
+
+// ScheduleDeletion is unused by the create/update ordering scenario.
+func (secrets *orderingSecrets) ScheduleDeletion(
+	_ context.Context,
+	_ domain.SecretName,
+	_ int32,
+) error {
+	return nil
+}
+
+// Discover returns the configured scope candidates.
+func (secrets *memorySecrets) Discover(_ context.Context) ([]domain.DiscoveryEvidence, error) {
+	if len(secrets.discoveries) > 0 {
+		index := min(secrets.discoverCalls, len(secrets.discoveries)-1)
+		secrets.discoverCalls++
+		return append([]domain.DiscoveryEvidence(nil), secrets.discoveries[index]...), nil
+	}
+	secrets.discoverCalls++
+	return append([]domain.DiscoveryEvidence(nil), secrets.discovered...), nil
+}
+
 // Observe returns the current direct desired-name evidence.
 func (secrets *memorySecrets) Observe(
 	_ context.Context,
@@ -165,6 +293,18 @@ func (secrets *memorySecrets) Observe(
 	return secrets.evidence, secrets.observeErr
 }
 
+// ObserveManaged returns direct metadata for one configured removed scope member.
+func (secrets *memorySecrets) ObserveManaged(
+	_ context.Context,
+	name domain.SecretName,
+) (domain.ObservedEvidence, error) {
+	if secrets.managedCalls == nil {
+		secrets.managedCalls = make(map[string]int)
+	}
+	secrets.managedCalls[name.Value()]++
+	return secrets.managedEvidence[name.Value()], nil
+}
+
 // Create records a create and optionally simulates an ambiguous response.
 func (secrets *memorySecrets) Create(
 	_ context.Context,
@@ -173,6 +313,7 @@ func (secrets *memorySecrets) Create(
 	token string,
 ) error {
 	secrets.createCalls++
+	secrets.operations = append(secrets.operations, "create:"+desired.Name().Value())
 	secrets.tokens = append(secrets.tokens, token)
 	if secrets.ambiguousBefore && secrets.createCalls == 1 {
 		return ambiguousMutationError{}
@@ -193,12 +334,48 @@ func (secrets *memorySecrets) Update(
 	token string,
 ) error {
 	secrets.updateCalls++
+	secrets.operations = append(secrets.operations, "update:"+desired.Name().Value())
 	secrets.tokens = append(secrets.tokens, token)
+	if secrets.updateErr != nil {
+		return secrets.updateErr
+	}
 	secrets.evidence = ownedApplicationEvidence(desired, secrets.scope)
 	if secrets.ambiguousUpdate && secrets.updateCalls == 1 {
 		return ambiguousMutationError{}
 	}
 
+	return nil
+}
+
+// Restore records one lifecycle restore and makes the direct desired evidence active.
+func (secrets *memorySecrets) Restore(_ context.Context, name domain.SecretName) error {
+	secrets.restoreCalls++
+	secrets.operations = append(secrets.operations, "restore:"+name.Value())
+	secrets.evidence.ScheduledForDeletion = false
+	return nil
+}
+
+// ScheduleDeletion records one bounded deletion and makes managed evidence scheduled.
+func (secrets *memorySecrets) ScheduleDeletion(
+	_ context.Context,
+	name domain.SecretName,
+	recoveryWindowDays int32,
+) error {
+	secrets.deleteCalls++
+	secrets.operations = append(secrets.operations, "schedule-deletion:"+name.Value())
+	secrets.deletedDays = append(secrets.deletedDays, recoveryWindowDays)
+	if secrets.ambiguousDelete && secrets.deleteCalls == 1 {
+		return ambiguousMutationError{}
+	}
+	if secrets.deleteErr != nil {
+		return secrets.deleteErr
+	}
+	if secrets.deleteNoEffect {
+		return nil
+	}
+	evidence := secrets.managedEvidence[name.Value()]
+	evidence.ScheduledForDeletion = true
+	secrets.managedEvidence[name.Value()] = evidence
 	return nil
 }
 
@@ -238,6 +415,140 @@ func TestSyncCreateUpdateAndNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, testContext.secrets.updateCalls, "identical content must not create another version")
 	assert.Equal(t, 1, report.Counts.Unchanged)
+}
+
+// TestSyncRestoresThenUpdatesInOneBoundedFollowUp proves the design's separate restore cycle.
+func TestSyncRestoresThenUpdatesInOneBoundedFollowUp(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	old := `{"password":"old"}`
+	testContext.secrets.evidence = ownedApplicationEvidenceWithValue(
+		testContext.desired,
+		testContext.secrets.scope,
+		old,
+	)
+	testContext.secrets.evidence.ScheduledForDeletion = true
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	require.NoError(t, err)
+	assert.Equal(t, 1, testContext.secrets.restoreCalls)
+	assert.Equal(t, 1, testContext.secrets.updateCalls)
+	assert.Equal(t, 1, report.Counts.Restore)
+	assert.Equal(t, 1, report.Counts.Update)
+	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncSchedulesRemovedManagedSecretLast proves scope discovery drives bounded deletion.
+func TestSyncSchedulesRemovedManagedSecretLast(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	testContext.secrets.evidence = ownedApplicationEvidence(testContext.desired, testContext.secrets.scope)
+	removed := addRemovedManagedSecret(t, testContext.secrets, testContext.secrets.scope)
+	testContext.input.RecoveryWindowDays = 14
+
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	require.NoError(t, err)
+	assert.Equal(t, 1, testContext.secrets.deleteCalls)
+	assert.Equal(t, []int32{14}, testContext.secrets.deletedDays)
+	assert.Equal(t, []string{"schedule-deletion:" + removed.Name().Value()}, testContext.secrets.operations)
+	assert.Equal(t, 1, report.Counts.ScheduleDelete)
+	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncDirectlyVerifiesDeletionWhenDiscoveryOmitsTheAffectedName proves list staleness cannot report success.
+func TestSyncDirectlyVerifiesDeletionWhenDiscoveryOmitsTheAffectedName(t *testing.T) {
+	t.Parallel()
+
+	service, secrets, input := newEmptyAppTestContext(t)
+	removed := addRemovedManagedSecret(t, secrets, applicationScope(t))
+	secrets.discoveries = [][]domain.DiscoveryEvidence{
+		append([]domain.DiscoveryEvidence(nil), secrets.discovered...),
+		nil,
+	}
+	secrets.deleteNoEffect = true
+	input.AllowEmpty = true
+	input.VerificationTimeout = 20 * time.Millisecond
+
+	report, err := service.Sync(context.Background(), input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeVerification, outcome.Kind())
+	assert.Equal(t, "verification-inconclusive", report.Status)
+	assert.GreaterOrEqual(t, secrets.managedCalls[removed.Name().Value()], 3,
+		"verification must directly observe the affected deletion target")
+}
+
+// TestEmptyDesiredRequiresAuthorizationOnlyForNewDeletions proves the narrow allow-empty gate.
+func TestEmptyDesiredRequiresAuthorizationOnlyForNewDeletions(t *testing.T) {
+	t.Parallel()
+
+	service, secrets, input := newEmptyAppTestContext(t)
+	addRemovedManagedSecret(t, secrets, applicationScope(t))
+
+	report, err := service.Sync(context.Background(), input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeInvalid, outcome.Kind())
+	assert.Equal(t, "invalid", report.Status)
+	assert.Zero(t, secrets.deleteCalls)
+
+	input.AllowEmpty = true
+	report, err = service.Sync(context.Background(), input)
+	require.NoError(t, err)
+	assert.Equal(t, 1, secrets.deleteCalls)
+	assert.Equal(t, "converged", report.Status)
+
+	input.AllowEmpty = false
+	report, err = service.Sync(context.Background(), input)
+	require.NoError(t, err, "already scheduled empty state must converge without repeating authorization")
+	assert.Equal(t, 1, secrets.deleteCalls)
+	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncStopsBeforeDeletionOnPartialFailure proves deletions remain last after an update fails.
+func TestSyncStopsBeforeDeletionOnPartialFailure(t *testing.T) {
+	t.Parallel()
+
+	testContext := newAppTestContext(t)
+	testContext.secrets.evidence = ownedApplicationEvidenceWithValue(
+		testContext.desired,
+		testContext.secrets.scope,
+		`{"password":"old"}`,
+	)
+	removed := addRemovedManagedSecret(t, testContext.secrets, testContext.secrets.scope)
+	testContext.secrets.updateErr = errors.New("update failure sentinel")
+
+	report, err := testContext.service.Sync(context.Background(), testContext.input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeApplyFailed, outcome.Kind())
+	assert.Equal(t, "apply-failed", report.Status)
+	assert.Equal(t, []string{"update:" + testContext.desired.Name().Value()}, testContext.secrets.operations)
+	assert.Zero(t, testContext.secrets.deleteCalls, "removed secret must remain available after earlier failure")
+	assert.NotContains(t, testContext.logs.String(), removed.Name().Value())
+}
+
+// TestAmbiguousDeletionStopsWithoutBlindRetryAndLaterConverges proves safe lifecycle recovery.
+func TestAmbiguousDeletionStopsWithoutBlindRetryAndLaterConverges(t *testing.T) {
+	t.Parallel()
+
+	service, secrets, input := newEmptyAppTestContext(t)
+	addRemovedManagedSecret(t, secrets, applicationScope(t))
+	input.AllowEmpty = true
+	secrets.ambiguousDelete = true
+
+	_, err := service.Sync(context.Background(), input)
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeApplyFailed, outcome.Kind())
+	assert.Equal(t, 1, secrets.deleteCalls, "ambiguous lifecycle writes must not be blindly repeated")
+
+	secrets.ambiguousDelete = false
+	report, err := service.Sync(context.Background(), input)
+	require.NoError(t, err)
+	assert.Equal(t, 2, secrets.deleteCalls)
+	assert.Equal(t, "converged", report.Status)
 }
 
 // TestSyncUsesFreshTokenToRepairRepeatedExternalDrift proves tokens are per logical write.
@@ -346,6 +657,56 @@ func TestSyncRebuildsWholePlanAfterHarmlessDrift(t *testing.T) {
 	assert.Equal(t, 1, report.Counts.Create)
 	assert.Equal(t, 1, report.Counts.Update)
 	assert.Equal(t, "converged", report.Status)
+}
+
+// TestSyncPreservesAppliedRestoreBookkeepingAcrossRebuilds rejects unrelated follow-up operations.
+func TestSyncPreservesAppliedRestoreBookkeepingAcrossRebuilds(t *testing.T) {
+	t.Parallel()
+
+	value, err := domain.NewSecretValue([]byte(`{"value":"desired"}`))
+	require.NoError(t, err)
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	source := &fakeSource{snapshot: application.SourceSnapshot{
+		Revision: revision,
+		Documents: []application.EncryptedDocument{
+			{Path: "secrets/a.sops.json", Data: []byte("encrypted-a")},
+			{Path: "secrets/b.sops.json", Data: []byte("encrypted-b")},
+		},
+	}}
+	snapshot, err := application.BuildDesiredSnapshot(
+		context.Background(),
+		source,
+		&fakeDecrypter{value: value},
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"},
+	)
+	require.NoError(t, err)
+	scope := applicationScope(t)
+	desiredA := newApplicationDesired(t, "a", value, revision)
+	desiredB := newApplicationDesired(t, "b", value, revision)
+	old := `{"value":"old"}`
+	scheduled := ownedApplicationEvidenceWithValue(desiredA, scope, old)
+	scheduled.ScheduledForDeletion = true
+	secrets := &restoreRebuildSecrets{
+		current: map[string]domain.ObservedEvidence{
+			desiredA.Name().Value(): scheduled,
+			desiredB.Name().Value(): {},
+		},
+		observeCalls: map[string]int{},
+		driftName:    desiredB.Name().Value(),
+	}
+	service, err := application.NewService(snapshot, secrets, &sequenceTokens{}, slog.Default(), "test")
+	require.NoError(t, err)
+	report, err := service.Sync(context.Background(), application.ReconcileInput{
+		RepositoryID: "meigma/example", SourceRoot: "secrets", SecretPrefix: "/acme/payments",
+		RecoveryWindowDays: 30, VerificationTimeout: 20 * time.Millisecond,
+	})
+	var outcome *application.OutcomeError
+	require.ErrorAs(t, err, &outcome)
+	assert.Equal(t, application.OutcomeVerification, outcome.Kind())
+	assert.Equal(t, "verification-failed", report.Status)
+	assert.Equal(t, []string{"restore:" + desiredA.Name().Value()}, secrets.operations,
+		"a rebuild after restore must not apply unrelated operations")
 }
 
 // TestSyncBoundsRepeatedPreconditionReplans proves concurrent churn cannot loop indefinitely.
@@ -510,6 +871,76 @@ func newAppTestContext(t *testing.T) *appTestContext {
 		},
 		logs: logs,
 	}
+}
+
+// newEmptyAppTestContext builds a valid empty committed snapshot for lifecycle authorization tests.
+func newEmptyAppTestContext(
+	t *testing.T,
+) (*application.Service, *memorySecrets, application.ReconcileInput) {
+	t.Helper()
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	snapshot, err := application.BuildDesiredSnapshot(
+		context.Background(),
+		&fakeSource{snapshot: application.SourceSnapshot{Revision: revision}},
+		&fakeDecrypter{},
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"},
+	)
+	require.NoError(t, err)
+	secrets := &memorySecrets{scope: applicationScope(t)}
+	service, err := application.NewService(snapshot, secrets, &sequenceTokens{}, slog.Default(), "test")
+	require.NoError(t, err)
+
+	return service, secrets, application.ReconcileInput{
+		RepositoryID: "meigma/example", SourceRoot: "secrets", SecretPrefix: "/acme/payments",
+		RecoveryWindowDays: 30, VerificationTimeout: time.Second,
+	}
+}
+
+// addRemovedManagedSecret installs one exact discovered and directly observed managed member.
+func addRemovedManagedSecret(
+	t *testing.T,
+	secrets *memorySecrets,
+	scope domain.ScopeIdentity,
+) domain.DesiredSecret {
+	t.Helper()
+	name, err := domain.NewSecretName("/acme/payments/removed")
+	require.NoError(t, err)
+	source, err := domain.NewSourceIdentity("secrets/removed.sops.json")
+	require.NoError(t, err)
+	value, err := domain.NewSecretValue([]byte(`{"removed":"sentinel"}`))
+	require.NoError(t, err)
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	removed := domain.NewDesiredSecret(name, source, value, revision)
+	evidence := ownedApplicationEvidence(removed, scope)
+	candidate, err := domain.NewDiscoveryEvidence(name.Value(), evidence)
+	require.NoError(t, err)
+	secrets.discovered = append(secrets.discovered, candidate)
+	if secrets.managedEvidence == nil {
+		secrets.managedEvidence = make(map[string]domain.ObservedEvidence)
+	}
+	secrets.managedEvidence[name.Value()] = evidence
+
+	return removed
+}
+
+// newApplicationDesired constructs one mapped desired secret for multi-name orchestration tests.
+func newApplicationDesired(
+	t *testing.T,
+	stem string,
+	value domain.SecretValue,
+	revision domain.Revision,
+) domain.DesiredSecret {
+	t.Helper()
+	name, source, err := domain.MapSourcePath(
+		"secrets",
+		"/acme/payments",
+		"secrets/"+stem+".sops.json",
+	)
+	require.NoError(t, err)
+
+	return domain.NewDesiredSecret(name, source, value, revision)
 }
 
 // applicationScope returns the exact test ownership scope.

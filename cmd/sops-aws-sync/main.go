@@ -194,6 +194,7 @@ func reconcileInput(runtime config.Config) application.ReconcileInput {
 	return application.ReconcileInput{
 		RepositoryID: runtime.RepositoryID, SourceRoot: runtime.SourceRoot,
 		SecretPrefix: runtime.SecretPrefix, VerificationTimeout: runtime.VerificationTimeout,
+		AllowEmpty: runtime.AllowEmpty, RecoveryWindowDays: runtime.RecoveryWindowDays,
 		ShowResourceNames: runtime.ShowResourceNames,
 	}
 }

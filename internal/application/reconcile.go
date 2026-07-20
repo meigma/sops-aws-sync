@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"sort"
 	"time"
 
 	"github.com/meigma/sops-aws-sync/internal/domain"
@@ -25,15 +27,58 @@ const (
 
 var errPlanChanged = errors.New("reconciliation plan changed")
 
-// SecretsManager is the direct observation and Phase 2 mutation port.
+// applyResult retains mutation evidence that must survive harmless plan rebuilds.
+type applyResult struct {
+	rebuild             bool
+	rebuiltAfterRestore bool
+	affected            map[string]domain.SecretName
+	restored            map[string]domain.SecretName
+}
+
+// newApplyResult constructs empty per-run mutation evidence.
+func newApplyResult() applyResult {
+	return applyResult{
+		affected: make(map[string]domain.SecretName),
+		restored: make(map[string]domain.SecretName),
+	}
+}
+
+// merge retains every applied target and restore across one or more plan attempts.
+func (result *applyResult) merge(other applyResult) {
+	result.rebuild = other.rebuild
+	result.rebuiltAfterRestore = result.rebuiltAfterRestore || other.rebuiltAfterRestore
+	maps.Copy(result.affected, other.affected)
+	maps.Copy(result.restored, other.restored)
+}
+
+// affect retains one planned target that must be directly verified after apply.
+func (result *applyResult) affect(operation domain.Operation) {
+	name := operation.Name()
+	result.affected[name.Value()] = name
+}
+
+// record retains one operation whose mutation outcome was proved successful.
+func (result *applyResult) record(operation domain.Operation) {
+	result.affect(operation)
+	name := operation.Name()
+	if operation.Kind() == domain.DecisionRestore {
+		result.restored[name.Value()] = name
+	}
+}
+
+// SecretsManager is the scope discovery, direct observation, and lifecycle mutation port.
 type SecretsManager interface {
+	Discover(ctx context.Context) ([]domain.DiscoveryEvidence, error)
 	Observe(
 		ctx context.Context,
 		desired domain.DesiredSecret,
 		scope domain.ScopeIdentity,
 	) (domain.ObservedEvidence, error)
+	ObserveManaged(ctx context.Context, name domain.SecretName) (domain.ObservedEvidence, error)
 	Create(ctx context.Context, desired domain.DesiredSecret, scope domain.ScopeIdentity, token string) error
 	Update(ctx context.Context, desired domain.DesiredSecret, token string) error
+	Restore(ctx context.Context, name domain.SecretName) error
+	ScheduleDeletion(ctx context.Context, name domain.SecretName, recoveryWindowDays int32) error
 }
 
 // TokenSource produces fresh logical-write idempotency tokens.
@@ -64,6 +109,10 @@ type ReconcileInput struct {
 	SecretPrefix string
 	// VerificationTimeout bounds direct post-apply stabilization.
 	VerificationTimeout time.Duration
+	// AllowEmpty authorizes newly scheduled deletions from an empty desired snapshot.
+	AllowEmpty bool
+	// RecoveryWindowDays is the explicit Secrets Manager recovery period.
+	RecoveryWindowDays int32
 	// ShowResourceNames explicitly enables names in operational logs.
 	ShowResourceNames bool
 }
@@ -133,7 +182,7 @@ func (failure *OutcomeError) Unwrap() error {
 	return failure.cause
 }
 
-// Service orchestrates one direct desired-name reconciliation slice.
+// Service orchestrates the complete desired and discovered-scope reconciliation lifecycle.
 type Service struct {
 	desired DesiredSnapshot
 	secrets SecretsManager
@@ -142,7 +191,7 @@ type Service struct {
 	version string
 }
 
-// NewService constructs the Phase 2 application service.
+// NewService constructs the V1 application service.
 func NewService(
 	desired DesiredSnapshot,
 	secrets SecretsManager,
@@ -166,19 +215,19 @@ func NewService(
 	}, nil
 }
 
-// Plan builds and reports the pure direct desired-name plan without mutation.
+// Plan builds and reports the pure scope-wide plan without mutation.
 func (service *Service) Plan(ctx context.Context, input ReconcileInput) (Report, error) {
 	started := time.Now()
-	plan, _, _, revision, err := service.buildPlan(ctx, input)
+	plan, desired, _, revision, err := service.buildPlan(ctx, input)
 	report := service.newReport(plan, revision, started)
 	if err != nil {
 		classified := service.classifyPreflightError(ctx, err)
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
-	if len(plan.Conflicts()) > 0 {
-		report.Status = string(OutcomeConflict)
-		return report, NewOutcomeError(OutcomeConflict)
+	if validationErr := validatePlan(desired, plan, input.AllowEmpty); validationErr != nil {
+		report.Status, _ = outcomeReport(validationErr)
+		return report, validationErr
 	}
 	if plan.Converged() {
 		report.Status = statusConverged
@@ -192,7 +241,7 @@ func (service *Service) Plan(ctx context.Context, input ReconcileInput) (Report,
 	return report, nil
 }
 
-// Sync applies supported operations and requires a converged direct re-plan.
+// Sync applies the complete V1 operation set and requires a converged scope-wide re-plan.
 //
 //nolint:nonamedreturns // The named report lets deferred duration stamping cover every exit.
 func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report Report, resultErr error) {
@@ -212,31 +261,26 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report 
 		report.Status = preflightStatus(classified)
 		return report, classified
 	}
-	if validationErr := plan.ValidatePhaseTwo(); validationErr != nil {
-		return fail(NewOutcomeError(OutcomeConflict))
+	var applied applyResult
+	plan, applied, err = service.applyWithRebuilds(ctx, input, desired, scope, plan)
+	report.Counts = plan.Counts()
+	if err != nil {
+		return fail(err)
 	}
-	for rebuilds := 0; ; rebuilds++ {
-		rebuild, applyErr := service.applyPlan(ctx, scope, plan, input.ShowResourceNames)
-		if applyErr != nil {
-			return fail(applyErr)
-		}
-		if !rebuild {
-			break
-		}
-		if rebuilds >= maximumPlanRebuilds {
-			return fail(NewOutcomeError(OutcomeVerification))
-		}
-		rebuiltPlan, rebuildErr := service.rebuildPlan(ctx, desired, scope)
-		if rebuildErr != nil {
-			return fail(rebuildErr)
-		}
-		plan = rebuiltPlan
-		report.Counts = plan.Counts()
-		if err := plan.ValidatePhaseTwo(); err != nil {
-			return fail(NewOutcomeError(OutcomeConflict))
-		}
+	followUpCounts, followUpApplied, err := service.applyRestoreFollowUp(
+		ctx,
+		input,
+		desired,
+		scope,
+		plan,
+		applied,
+	)
+	if err != nil {
+		return fail(err)
 	}
-	verified, verificationErr := service.verify(ctx, input, desired, scope)
+	applied.merge(followUpApplied)
+	report.Counts = addExecutableCounts(report.Counts, followUpCounts)
+	verified, verificationErr := service.verify(ctx, input, desired, scope, applied.affected)
 	report.Verification = statusConverged
 	if verificationErr != nil {
 		report.Status, report.Verification = verificationErrorReport(verificationErr)
@@ -252,27 +296,136 @@ func (service *Service) Sync(ctx context.Context, input ReconcileInput) (report 
 	return report, nil
 }
 
+// applyWithRebuilds applies one complete plan and permits one harmless precondition rebuild.
+func (service *Service) applyWithRebuilds(
+	ctx context.Context,
+	input ReconcileInput,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	plan domain.Plan,
+) (domain.Plan, applyResult, error) {
+	applied := newApplyResult()
+	if err := validatePlan(desired, plan, input.AllowEmpty); err != nil {
+		return plan, applied, err
+	}
+	for rebuilds := 0; ; rebuilds++ {
+		attempt, err := service.applyPlan(
+			ctx,
+			scope,
+			plan,
+			input.RecoveryWindowDays,
+			input.ShowResourceNames,
+		)
+		applied.merge(attempt)
+		if err != nil || !attempt.rebuild {
+			return plan, applied, err
+		}
+		if rebuilds >= maximumPlanRebuilds {
+			return plan, applied, NewOutcomeError(OutcomeVerification)
+		}
+		plan, err = service.rebuildPlan(ctx, desired, scope)
+		if err != nil {
+			return plan, applied, err
+		}
+		if err = validatePlan(desired, plan, input.AllowEmpty); err != nil {
+			return plan, applied, err
+		}
+		if len(applied.restored) > 0 {
+			applied.rebuiltAfterRestore = true
+			return plan, applied, nil
+		}
+	}
+}
+
+// applyRestoreFollowUp performs at most one update-only cycle for initially restored names.
+func (service *Service) applyRestoreFollowUp(
+	ctx context.Context,
+	input ReconcileInput,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	initial domain.Plan,
+	applied applyResult,
+) (domain.Counts, applyResult, error) {
+	followUpApplied := newApplyResult()
+	if len(applied.restored) == 0 {
+		return domain.Counts{}, followUpApplied, nil
+	}
+	followUp := initial
+	if applied.rebuiltAfterRestore {
+		pending, err := validateRestoreFollowUp(followUp, applied.restored)
+		if err != nil {
+			return followUp.Counts(), followUpApplied, err
+		}
+		if !pending {
+			return service.applyRestorePlan(ctx, input, scope, followUp)
+		}
+	}
+	var err error
+	followUp, err = service.waitForRestoreFollowUp(ctx, input, desired, scope, applied.restored)
+	if err != nil || len(followUp.Operations()) == 0 {
+		return followUp.Counts(), followUpApplied, err
+	}
+
+	return service.applyRestorePlan(ctx, input, scope, followUp)
+}
+
+// applyRestorePlan applies the single permitted restore follow-up cycle without rebuilding.
+func (service *Service) applyRestorePlan(
+	ctx context.Context,
+	input ReconcileInput,
+	scope domain.ScopeIdentity,
+	followUp domain.Plan,
+) (domain.Counts, applyResult, error) {
+	applied, err := service.applyPlan(
+		ctx,
+		scope,
+		followUp,
+		input.RecoveryWindowDays,
+		input.ShowResourceNames,
+	)
+	if err != nil {
+		return followUp.Counts(), applied, err
+	}
+	if applied.rebuild {
+		return followUp.Counts(), applied, NewOutcomeError(OutcomeVerification)
+	}
+
+	return followUp.Counts(), applied, nil
+}
+
 // applyPlan applies one phase-ordered plan or asks the caller to rebuild all decisions.
 func (service *Service) applyPlan(
 	ctx context.Context,
 	scope domain.ScopeIdentity,
 	plan domain.Plan,
+	recoveryWindowDays int32,
 	showName bool,
-) (bool, error) {
+) (applyResult, error) {
+	result := newApplyResult()
 	for index, operation := range plan.Operations() {
-		if err := service.applyOperation(ctx, scope, operation, index, showName); err != nil {
+		result.affect(operation)
+		if err := service.applyOperation(
+			ctx,
+			scope,
+			operation,
+			recoveryWindowDays,
+			index,
+			showName,
+		); err != nil {
 			if errors.Is(err, errPlanChanged) {
-				return true, nil
+				result.rebuild = true
+				return result, nil
 			}
 
-			return false, err
+			return result, err
 		}
+		result.record(operation)
 	}
 
-	return false, nil
+	return result, nil
 }
 
-// rebuildPlan re-observes every desired name before deriving a replacement plan.
+// rebuildPlan re-observes the complete desired and discovered scope union.
 func (service *Service) rebuildPlan(
 	ctx context.Context,
 	desired []domain.DesiredSecret,
@@ -290,7 +443,7 @@ func (service *Service) rebuildPlan(
 	return plan, nil
 }
 
-// buildPlan derives scope, observes every desired name, and plans.
+// buildPlan derives scope, observes the desired and discovered union, and plans.
 func (service *Service) buildPlan(
 	ctx context.Context,
 	input ReconcileInput,
@@ -316,19 +469,67 @@ func (service *Service) buildPlan(
 	return plan, desired, scope, revision, nil
 }
 
-// observeAll directly observes and classifies every desired name.
+// observeAll merges paginated exact-scope discovery with direct desired-name evidence.
 func (service *Service) observeAll(
 	ctx context.Context,
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
 ) ([]domain.ObservedSlot, error) {
-	observed := make([]domain.ObservedSlot, 0, len(desired))
+	return service.observeAllWithAffected(ctx, desired, scope, nil)
+}
+
+// observeAllWithAffected directly observes every applied target even when discovery omits it.
+func (service *Service) observeAllWithAffected(
+	ctx context.Context,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	affected map[string]domain.SecretName,
+) ([]domain.ObservedSlot, error) {
+	discovered, err := service.secrets.Discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desiredNames := make(map[string]struct{}, len(desired))
+	observed := make([]domain.ObservedSlot, 0, len(desired)+len(discovered))
 	for _, secret := range desired {
-		evidence, err := service.secrets.Observe(ctx, secret, scope)
-		if err != nil {
-			return nil, err
+		evidence, observeErr := service.secrets.Observe(ctx, secret, scope)
+		if observeErr != nil {
+			return nil, observeErr
 		}
+		desiredNames[secret.Name().Value()] = struct{}{}
 		observed = append(observed, domain.ClassifyDirect(secret, scope, evidence))
+	}
+	candidates := make(map[string]domain.SecretName, len(discovered))
+	for _, candidate := range discovered {
+		if !domain.IsScopeCandidate(scope, candidate.Evidence) {
+			continue
+		}
+		name := candidate.Name.Value()
+		if _, desiredName := desiredNames[name]; desiredName {
+			continue
+		}
+		if _, duplicate := candidates[name]; duplicate {
+			return nil, errors.New("scope discovery returned a duplicate name")
+		}
+		candidates[name] = candidate.Name
+	}
+	for name, target := range affected {
+		if _, desiredName := desiredNames[name]; !desiredName {
+			candidates[name] = target
+		}
+	}
+	sortedNames := make([]string, 0, len(candidates))
+	for name := range candidates {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+	for _, candidateName := range sortedNames {
+		name := candidates[candidateName]
+		evidence, observeErr := service.secrets.ObserveManaged(ctx, name)
+		if observeErr != nil {
+			return nil, observeErr
+		}
+		observed = append(observed, domain.ClassifyManaged(name, scope, evidence))
 	}
 
 	return observed, nil
@@ -339,10 +540,11 @@ func (service *Service) applyOperation(
 	ctx context.Context,
 	scope domain.ScopeIdentity,
 	operation domain.Operation,
+	recoveryWindowDays int32,
 	index int,
 	showName bool,
 ) error {
-	current, err := service.observeOne(ctx, scope, operation.Desired())
+	current, err := service.observeOperation(ctx, scope, operation)
 	if err != nil {
 		return service.classifyApplyError(ctx, err)
 	}
@@ -353,14 +555,19 @@ func (service *Service) applyOperation(
 		return NewOutcomeError(OutcomeConflict)
 	case domain.TransitionRetrySameToken:
 		return NewOutcomeError(OutcomeApplyFailed)
+	case domain.TransitionInconclusive:
+		return NewOutcomeError(OutcomeApplyFailed)
 	case domain.TransitionApply:
 	}
-	token, err := service.tokens.NewToken()
-	if err != nil {
-		return NewOutcomeError(OutcomeApplyFailed)
+	token := ""
+	if operation.Kind() == domain.DecisionCreate || operation.Kind() == domain.DecisionUpdate {
+		token, err = service.tokens.NewToken()
+		if err != nil {
+			return NewOutcomeError(OutcomeApplyFailed)
+		}
 	}
 	service.logOperation(ctx, "applying", operation, index, showName)
-	err = service.mutate(ctx, scope, operation, token)
+	err = service.mutate(ctx, scope, operation, token, recoveryWindowDays)
 	if err == nil {
 		return nil
 	}
@@ -372,7 +579,7 @@ func (service *Service) applyOperation(
 		return service.classifyApplyError(ctx, err)
 	}
 
-	return service.resolveAmbiguous(ctx, scope, operation, token)
+	return service.resolveAmbiguous(ctx, scope, operation, token, recoveryWindowDays)
 }
 
 // resolveAmbiguous re-observes one uncertain mutation before a same-token retry.
@@ -381,8 +588,9 @@ func (service *Service) resolveAmbiguous(
 	scope domain.ScopeIdentity,
 	operation domain.Operation,
 	token string,
+	recoveryWindowDays int32,
 ) error {
-	current, observeErr := service.observeOne(ctx, scope, operation.Desired())
+	current, observeErr := service.observeOperation(ctx, scope, operation)
 	if observeErr != nil {
 		return service.classifyApplyError(ctx, observeErr)
 	}
@@ -390,8 +598,8 @@ func (service *Service) resolveAmbiguous(
 	case domain.TransitionSucceeded:
 		return nil
 	case domain.TransitionRetrySameToken:
-		if retryErr := service.mutate(ctx, scope, operation, token); retryErr != nil {
-			final, finalErr := service.observeOne(ctx, scope, operation.Desired())
+		if retryErr := service.mutate(ctx, scope, operation, token, recoveryWindowDays); retryErr != nil {
+			final, finalErr := service.observeOperation(ctx, scope, operation)
 			if finalErr == nil && domain.ResolveAmbiguous(operation, final) == domain.TransitionSucceeded {
 				return nil
 			}
@@ -400,57 +608,150 @@ func (service *Service) resolveAmbiguous(
 		return nil
 	case domain.TransitionConflict:
 		return NewOutcomeError(OutcomeConflict)
-	case domain.TransitionReplan, domain.TransitionApply:
+	case domain.TransitionReplan, domain.TransitionApply, domain.TransitionInconclusive:
 		return NewOutcomeError(OutcomeApplyFailed)
 	}
 
 	return NewOutcomeError(OutcomeApplyFailed)
 }
 
-// mutate dispatches only the create and update operations supported in Phase 2.
+// mutate dispatches the complete V1 operation set.
 func (service *Service) mutate(
 	ctx context.Context,
 	scope domain.ScopeIdentity,
 	operation domain.Operation,
 	token string,
+	recoveryWindowDays int32,
 ) error {
 	switch operation.Kind() {
 	case domain.DecisionCreate:
 		return service.secrets.Create(ctx, operation.Desired(), scope, token)
 	case domain.DecisionUpdate:
 		return service.secrets.Update(ctx, operation.Desired(), token)
-	case domain.DecisionRestore, domain.DecisionUnchanged:
-		return errors.New("unsupported Phase 2 mutation")
+	case domain.DecisionRestore:
+		return service.secrets.Restore(ctx, operation.Name())
+	case domain.DecisionScheduleDeletion:
+		return service.secrets.ScheduleDeletion(ctx, operation.Name(), recoveryWindowDays)
+	case domain.DecisionUnchanged:
+		return errors.New("unchanged decisions are not executable")
 	}
 
 	return errors.New("unknown mutation")
 }
 
-// observeOne directly classifies one desired name.
-func (service *Service) observeOne(
+// observeOperation directly classifies one desired or discovered operation target.
+func (service *Service) observeOperation(
 	ctx context.Context,
 	scope domain.ScopeIdentity,
-	desired domain.DesiredSecret,
+	operation domain.Operation,
 ) (domain.ObservedSlot, error) {
-	evidence, err := service.secrets.Observe(ctx, desired, scope)
+	if operation.HasDesired() {
+		desired := operation.Desired()
+		evidence, err := service.secrets.Observe(ctx, desired, scope)
+		if err != nil {
+			return domain.ObservedSlot{}, err
+		}
+
+		return domain.ClassifyDirect(desired, scope, evidence), nil
+	}
+	evidence, err := service.secrets.ObserveManaged(ctx, operation.Name())
 	if err != nil {
 		return domain.ObservedSlot{}, err
 	}
 
-	return domain.ClassifyDirect(desired, scope, evidence), nil
+	return domain.ClassifyManaged(operation.Name(), scope, evidence), nil
 }
 
-// verify retries direct re-observation until the plan converges or its deadline ends.
+// emptyStateBlocked reports a newly destructive empty snapshot without explicit authorization.
+func emptyStateBlocked(desired []domain.DesiredSecret, plan domain.Plan, allowEmpty bool) bool {
+	return len(desired) == 0 && plan.Counts().ScheduleDelete > 0 && !allowEmpty
+}
+
+// validatePlan rejects conflicts and unauthorized destructive empty snapshots before mutation.
+func validatePlan(desired []domain.DesiredSecret, plan domain.Plan, allowEmpty bool) error {
+	if len(plan.Conflicts()) > 0 {
+		return NewOutcomeError(OutcomeConflict)
+	}
+	if emptyStateBlocked(desired, plan, allowEmpty) {
+		return NewOutcomeError(OutcomeInvalid)
+	}
+
+	return nil
+}
+
+// addExecutableCounts adds follow-up operations without double-counting repeated no-op observations.
+func addExecutableCounts(base, additional domain.Counts) domain.Counts {
+	base.Create += additional.Create
+	base.Update += additional.Update
+	base.Restore += additional.Restore
+	base.ScheduleDelete += additional.ScheduleDelete
+
+	return base
+}
+
+// waitForRestoreFollowUp waits until restored names expose only their one permitted update cycle.
+func (service *Service) waitForRestoreFollowUp(
+	ctx context.Context,
+	input ReconcileInput,
+	desired []domain.DesiredSecret,
+	scope domain.ScopeIdentity,
+	restored map[string]domain.SecretName,
+) (domain.Plan, error) {
+	verificationContext, cancel := context.WithTimeout(ctx, input.VerificationTimeout)
+	defer cancel()
+	for {
+		plan, err := service.rebuildPlan(verificationContext, desired, scope)
+		if err == nil {
+			pending, validationErr := validateRestoreFollowUp(plan, restored)
+			if validationErr != nil {
+				return domain.Plan{}, validationErr
+			}
+			if !pending {
+				return plan, nil
+			}
+		}
+		select {
+		case <-verificationContext.Done():
+			return domain.Plan{}, classifyVerificationError(ctx)
+		case <-time.After(verificationPollInterval):
+		}
+	}
+}
+
+// validateRestoreFollowUp accepts only waiting restores or updates for initially restored names.
+func validateRestoreFollowUp(plan domain.Plan, restored map[string]domain.SecretName) (bool, error) {
+	if len(plan.Conflicts()) > 0 {
+		return false, NewOutcomeError(OutcomeConflict)
+	}
+	pending := false
+	for _, operation := range plan.Operations() {
+		if _, expected := restored[operation.Name().Value()]; !expected {
+			return false, NewOutcomeError(OutcomeVerification)
+		}
+		switch operation.Kind() {
+		case domain.DecisionRestore:
+			pending = true
+		case domain.DecisionUpdate:
+		case domain.DecisionCreate, domain.DecisionScheduleDeletion, domain.DecisionUnchanged:
+			return false, NewOutcomeError(OutcomeVerification)
+		}
+	}
+
+	return pending, nil
+}
+
+// verify retries scope-wide re-observation until the plan converges or its deadline ends.
 func (service *Service) verify(
 	ctx context.Context,
 	input ReconcileInput,
 	desired []domain.DesiredSecret,
 	scope domain.ScopeIdentity,
+	affected map[string]domain.SecretName,
 ) (domain.Plan, error) {
 	verificationContext, cancel := context.WithTimeout(ctx, input.VerificationTimeout)
 	defer cancel()
 	for {
-		observed, err := service.observeAll(verificationContext, desired, scope)
+		observed, err := service.observeAllWithAffected(verificationContext, desired, scope, affected)
 		if err == nil {
 			plan, planErr := domain.BuildPlan(desired, observed)
 			if planErr != nil {
@@ -596,7 +897,7 @@ func (service *Service) logOperation(
 ) {
 	resource := fmt.Sprintf("resource-%04d", index+1)
 	if showName {
-		resource = operation.Desired().Name().Value()
+		resource = operation.Name().Value()
 	}
 	service.logger.InfoContext(ctx, "reconciliation operation", "phase", "apply", "operation", operation.Kind(),
 		"status", status, "resource", resource)

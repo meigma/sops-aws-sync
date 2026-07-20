@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"sort"
 	"strings"
 )
 
@@ -45,6 +44,24 @@ type ObservedEvidence struct {
 	SecretBinary bool
 }
 
+// DiscoveryEvidence is one paginated candidate name and its normalized list metadata.
+type DiscoveryEvidence struct {
+	// Name is the validated AWS secret name returned by discovery.
+	Name SecretName
+	// Evidence contains normalized metadata used only for exact scope filtering.
+	Evidence ObservedEvidence
+}
+
+// NewDiscoveryEvidence validates one discovered AWS name and pairs it with list metadata.
+func NewDiscoveryEvidence(name string, evidence ObservedEvidence) (DiscoveryEvidence, error) {
+	validated, err := NewSecretName(name)
+	if err != nil {
+		return DiscoveryEvidence{}, err
+	}
+
+	return DiscoveryEvidence{Name: validated, Evidence: evidence}, nil
+}
+
 // ObservedKind identifies a closed directly observed state.
 type ObservedKind string
 
@@ -55,6 +72,8 @@ const (
 	ObservedForeign ObservedKind = "foreign"
 	// ObservedOwnedActiveString is an owned active secret with a current string value.
 	ObservedOwnedActiveString ObservedKind = "owned-active-string"
+	// ObservedOwnedActiveUnknown is an owned active discovered secret whose payload was not needed.
+	ObservedOwnedActiveUnknown ObservedKind = "owned-active-unknown"
 	// ObservedOwnedActiveBinary is an owned active secret with a current binary value.
 	ObservedOwnedActiveBinary ObservedKind = "owned-active-binary"
 	// ObservedOwnedWithoutCurrent is an owned active secret without an AWSCURRENT value.
@@ -83,13 +102,13 @@ func ClassifyDirect(
 	scope ScopeIdentity,
 	evidence ObservedEvidence,
 ) ObservedSlot {
-	metadata, terminal := classifyMetadata(desired, scope, evidence)
+	source := desired.Source()
+	metadata, terminal := classifyMetadata(desired.Name(), &source, scope, evidence)
 	if terminal {
 		return metadata
 	}
 
 	name := desired.Name()
-	source := desired.Source()
 	if evidence.SecretBinary {
 		if evidence.SecretString != nil {
 			return newObservedSlot(name, ObservedInvalid, source, "", evidence.CurrentVersion, "payload")
@@ -109,18 +128,43 @@ func CurrentPayloadRequired(
 	scope ScopeIdentity,
 	evidence ObservedEvidence,
 ) bool {
-	_, terminal := classifyMetadata(desired, scope, evidence)
+	source := desired.Source()
+	_, terminal := classifyMetadata(desired.Name(), &source, scope, evidence)
 
 	return !terminal
 }
 
+// IsScopeCandidate reports whether discovery evidence has the exact managed-by and scope tags.
+func IsScopeCandidate(scope ScopeIdentity, evidence ObservedEvidence) bool {
+	return evidence.Exists && evidence.ReservedTags != nil &&
+		evidence.ReservedTags[ManagedByTagKey] == ManagedByTagValue &&
+		evidence.ReservedTags[ScopeTagKey] == scope.Value()
+}
+
+// ClassifyManaged classifies a directly observed discovery candidate without reading its payload.
+func ClassifyManaged(name SecretName, scope ScopeIdentity, evidence ObservedEvidence) ObservedSlot {
+	metadata, terminal := classifyMetadata(name, nil, scope, evidence)
+	if terminal {
+		return metadata
+	}
+
+	return newObservedSlot(
+		name,
+		ObservedOwnedActiveUnknown,
+		metadata.source,
+		"",
+		evidence.CurrentVersion,
+		"",
+	)
+}
+
 // classifyMetadata returns every state decidable without loading AWSCURRENT.
 func classifyMetadata(
-	desired DesiredSecret,
+	name SecretName,
+	expectedSource *SourceIdentity,
 	scope ScopeIdentity,
 	evidence ObservedEvidence,
 ) (ObservedSlot, bool) {
-	name := desired.Name()
 	if !evidence.Exists {
 		return newObservedSlot(name, ObservedMissing, SourceIdentity{}, "", "", ""), true
 	}
@@ -135,7 +179,7 @@ func classifyMetadata(
 	if err != nil {
 		return newObservedSlot(name, ObservedInvalid, SourceIdentity{}, "", evidence.CurrentVersion, "source-tag"), true
 	}
-	if source != desired.Source() {
+	if expectedSource != nil && source != *expectedSource {
 		return newObservedSlot(name, ObservedForeign, source, "", evidence.CurrentVersion, "source"), true
 	}
 	if strings.TrimSpace(evidence.OwningService) != "" {
@@ -157,7 +201,7 @@ func classifyMetadata(
 		return newObservedSlot(name, ObservedOwnedWithoutCurrent, source, "", evidence.CurrentVersion, ""), true
 	}
 
-	return ObservedSlot{}, false
+	return newObservedSlot(name, ObservedOwnedActiveUnknown, source, "", evidence.CurrentVersion, ""), false
 }
 
 // newObservedSlot constructs a slot and computes a secret-safe state fingerprint.
@@ -213,33 +257,38 @@ func (slot ObservedSlot) ConflictClass() string {
 	return slot.conflictClass
 }
 
+// Source returns the classified ownership source identity.
+func (slot ObservedSlot) Source() SourceIdentity {
+	return slot.source
+}
+
 // achieves reports whether an owned active string already matches the desired value.
 func (slot ObservedSlot) achieves(desired DesiredSecret) bool {
 	return slot.kind == ObservedOwnedActiveString && slot.source == desired.Source() &&
 		desired.Value().EqualString(slot.secretString)
 }
 
-// ValidateObservedSet rejects missing or duplicate direct observations.
+// ValidateObservedSet rejects missing desired observations and duplicate union members.
 func ValidateObservedSet(desired []DesiredSecret, observed []ObservedSlot) error {
-	if len(desired) != len(observed) {
-		return errors.New("direct observation count does not match desired count")
-	}
-	wanted := make([]string, 0, len(desired))
-	actual := make([]string, 0, len(observed))
+	wanted := make(map[string]struct{}, len(desired))
 	for _, secret := range desired {
-		wanted = append(wanted, secret.Name().Value())
-	}
-	for _, slot := range observed {
-		actual = append(actual, slot.Name().Value())
-	}
-	sort.Strings(wanted)
-	sort.Strings(actual)
-	for index := range wanted {
-		if wanted[index] != actual[index] {
-			return errors.New("direct observations do not match desired names")
-		}
-		if index > 0 && wanted[index-1] == wanted[index] {
+		name := secret.Name().Value()
+		if _, exists := wanted[name]; exists {
 			return errors.New("duplicate desired secret name")
+		}
+		wanted[name] = struct{}{}
+	}
+	actual := make(map[string]struct{}, len(observed))
+	for _, slot := range observed {
+		name := slot.Name().Value()
+		if _, exists := actual[name]; exists {
+			return errors.New("duplicate observed secret name")
+		}
+		actual[name] = struct{}{}
+	}
+	for name := range wanted {
+		if _, exists := actual[name]; !exists {
+			return errors.New("direct observations do not match desired names")
 		}
 	}
 

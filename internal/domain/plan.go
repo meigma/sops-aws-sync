@@ -9,6 +9,7 @@ const (
 	operationPhaseRestore = iota + 1
 	operationPhaseCreate
 	operationPhaseUpdate
+	operationPhaseScheduleDelete
 	operationPhaseUnchanged
 	operationPhaseUnknown
 )
@@ -23,6 +24,8 @@ const (
 	DecisionUpdate DecisionKind = "update"
 	// DecisionRestore restores an owned desired secret scheduled for deletion.
 	DecisionRestore DecisionKind = "restore"
+	// DecisionScheduleDeletion schedules an absent owned secret for recovery-window deletion.
+	DecisionScheduleDeletion DecisionKind = "schedule-deletion"
 	// DecisionUnchanged records an already converged desired secret.
 	DecisionUnchanged DecisionKind = "unchanged"
 )
@@ -30,7 +33,10 @@ const (
 // Operation is one executable decision with a typed expected state.
 type Operation struct {
 	kind                DecisionKind
+	name                SecretName
+	source              SourceIdentity
 	desired             DesiredSecret
+	hasDesired          bool
 	expectedFingerprint string
 }
 
@@ -42,6 +48,21 @@ func (operation Operation) Kind() DecisionKind {
 // Desired returns the immutable desired secret.
 func (operation Operation) Desired() DesiredSecret {
 	return operation.desired
+}
+
+// HasDesired reports whether the operation targets a committed desired secret.
+func (operation Operation) HasDesired() bool {
+	return operation.hasDesired
+}
+
+// Name returns the operation's AWS secret name.
+func (operation Operation) Name() SecretName {
+	return operation.name
+}
+
+// Source returns the operation's exact source ownership identity.
+func (operation Operation) Source() SourceIdentity {
+	return operation.source
 }
 
 // ExpectedFingerprint returns the secret-safe precondition identity.
@@ -66,7 +87,7 @@ type Plan struct {
 	conflicts  []Conflict
 }
 
-// BuildPlan classifies desired names against their direct observed states.
+// BuildPlan classifies the union of desired names and discovered scope members.
 func BuildPlan(desired []DesiredSecret, observed []ObservedSlot) (Plan, error) {
 	if err := ValidateObservedSet(desired, observed); err != nil {
 		return Plan{}, err
@@ -81,7 +102,9 @@ func BuildPlan(desired []DesiredSecret, observed []ObservedSlot) (Plan, error) {
 	})
 
 	plan := Plan{}
+	desiredNames := make(map[string]struct{}, len(sorted))
 	for _, secret := range sorted {
+		desiredNames[secret.Name().Value()] = struct{}{}
 		slot := observedByName[secret.Name().Value()]
 		switch slot.Kind() {
 		case ObservedMissing:
@@ -92,12 +115,27 @@ func BuildPlan(desired []DesiredSecret, observed []ObservedSlot) (Plan, error) {
 			} else {
 				plan.operations = append(plan.operations, newOperation(DecisionUpdate, secret, slot))
 			}
-		case ObservedOwnedActiveBinary, ObservedOwnedWithoutCurrent:
+		case ObservedOwnedActiveBinary, ObservedOwnedActiveUnknown, ObservedOwnedWithoutCurrent:
 			plan.operations = append(plan.operations, newOperation(DecisionUpdate, secret, slot))
 		case ObservedOwnedScheduled:
 			plan.operations = append(plan.operations, newOperation(DecisionRestore, secret, slot))
 		case ObservedForeign, ObservedConflict, ObservedInvalid:
 			plan.conflicts = append(plan.conflicts, Conflict{class: slot.ConflictClass()})
+		}
+	}
+	for _, slot := range observed {
+		if _, desiredName := desiredNames[slot.Name().Value()]; desiredName {
+			continue
+		}
+		switch slot.Kind() {
+		case ObservedOwnedActiveString, ObservedOwnedActiveUnknown,
+			ObservedOwnedActiveBinary, ObservedOwnedWithoutCurrent:
+			plan.operations = append(plan.operations, newDeletionOperation(slot))
+		case ObservedOwnedScheduled:
+			plan.unchanged++
+		case ObservedForeign, ObservedConflict, ObservedInvalid:
+			plan.conflicts = append(plan.conflicts, Conflict{class: slot.ConflictClass()})
+		case ObservedMissing:
 		}
 	}
 	sort.SliceStable(plan.operations, func(left, right int) bool {
@@ -106,7 +144,10 @@ func BuildPlan(desired []DesiredSecret, observed []ObservedSlot) (Plan, error) {
 		if leftPhase != rightPhase {
 			return leftPhase < rightPhase
 		}
-		return plan.operations[left].Desired().Name().Value() < plan.operations[right].Desired().Name().Value()
+		return plan.operations[left].Name().Value() < plan.operations[right].Name().Value()
+	})
+	sort.Slice(plan.conflicts, func(left, right int) bool {
+		return plan.conflicts[left].Class() < plan.conflicts[right].Class()
 	})
 
 	return plan, nil
@@ -114,7 +155,18 @@ func BuildPlan(desired []DesiredSecret, observed []ObservedSlot) (Plan, error) {
 
 // newOperation constructs an operation from a classified expected state.
 func newOperation(kind DecisionKind, desired DesiredSecret, expected ObservedSlot) Operation {
-	return Operation{kind: kind, desired: desired, expectedFingerprint: expected.Fingerprint()}
+	return Operation{
+		kind: kind, name: desired.Name(), source: desired.Source(), desired: desired, hasDesired: true,
+		expectedFingerprint: expected.Fingerprint(),
+	}
+}
+
+// newDeletionOperation constructs one absent-source lifecycle operation.
+func newDeletionOperation(expected ObservedSlot) Operation {
+	return Operation{
+		kind: DecisionScheduleDeletion, name: expected.Name(), source: expected.Source(),
+		expectedFingerprint: expected.Fingerprint(),
+	}
 }
 
 // operationPhase returns the design-defined deterministic phase order.
@@ -126,6 +178,8 @@ func operationPhase(kind DecisionKind) int {
 		return operationPhaseCreate
 	case DecisionUpdate:
 		return operationPhaseUpdate
+	case DecisionScheduleDeletion:
+		return operationPhaseScheduleDelete
 	case DecisionUnchanged:
 		return operationPhaseUnchanged
 	}
@@ -164,6 +218,8 @@ func (plan Plan) Counts() Counts {
 			counts.Update++
 		case DecisionRestore:
 			counts.Restore++
+		case DecisionScheduleDeletion:
+			counts.ScheduleDelete++
 		case DecisionUnchanged:
 			counts.Unchanged++
 		}
@@ -194,8 +250,8 @@ func (plan Plan) ValidatePhaseTwo() error {
 		return errors.New("plan contains a safety conflict")
 	}
 	for _, operation := range plan.operations {
-		if operation.Kind() == DecisionRestore {
-			return errors.New("restore is deferred until Phase 3")
+		if operation.Kind() == DecisionRestore || operation.Kind() == DecisionScheduleDeletion {
+			return errors.New("lifecycle operations are deferred until Phase 3")
 		}
 	}
 
@@ -217,11 +273,13 @@ const (
 	TransitionReplan TransitionOutcome = "replan"
 	// TransitionConflict reports a changed ownership or safety constraint.
 	TransitionConflict TransitionOutcome = "conflict"
+	// TransitionInconclusive reports an ambiguous lifecycle write that cannot be safely retried.
+	TransitionInconclusive TransitionOutcome = "inconclusive"
 )
 
 // CheckPrecondition evaluates an operation immediately before mutation.
 func CheckPrecondition(operation Operation, current ObservedSlot) TransitionOutcome {
-	if current.achieves(operation.Desired()) {
+	if operationAchieved(operation, current) {
 		return TransitionSucceeded
 	}
 	if isConflictKind(current.Kind()) {
@@ -236,17 +294,39 @@ func CheckPrecondition(operation Operation, current ObservedSlot) TransitionOutc
 
 // ResolveAmbiguous evaluates evidence after an ambiguous mutation result.
 func ResolveAmbiguous(operation Operation, current ObservedSlot) TransitionOutcome {
-	if current.achieves(operation.Desired()) {
+	if operationAchieved(operation, current) {
 		return TransitionSucceeded
 	}
 	if isConflictKind(current.Kind()) {
 		return TransitionConflict
 	}
-	if current.Fingerprint() == operation.ExpectedFingerprint() {
+	if current.Fingerprint() == operation.ExpectedFingerprint() &&
+		(operation.Kind() == DecisionCreate || operation.Kind() == DecisionUpdate) {
 		return TransitionRetrySameToken
+	}
+	if current.Fingerprint() == operation.ExpectedFingerprint() {
+		return TransitionInconclusive
 	}
 
 	return TransitionReplan
+}
+
+// operationAchieved reports whether current evidence proves one operation's postcondition.
+func operationAchieved(operation Operation, current ObservedSlot) bool {
+	switch operation.Kind() {
+	case DecisionCreate, DecisionUpdate:
+		return operation.hasDesired && current.achieves(operation.desired)
+	case DecisionRestore:
+		return current.Source() == operation.Source() &&
+			(current.Kind() == ObservedOwnedActiveString || current.Kind() == ObservedOwnedActiveUnknown ||
+				current.Kind() == ObservedOwnedActiveBinary || current.Kind() == ObservedOwnedWithoutCurrent)
+	case DecisionScheduleDeletion:
+		return current.Source() == operation.Source() && current.Kind() == ObservedOwnedScheduled
+	case DecisionUnchanged:
+		return true
+	}
+
+	return false
 }
 
 // isConflictKind reports whether an observed variant blocks mutation.
