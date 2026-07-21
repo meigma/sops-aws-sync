@@ -62,3 +62,15 @@ CreateSecret but AWS requires the permission). Saved as
 .journal/008/DOC_STRUCTURE_PROPOSAL.md with the grounding evidence in
 .journal/008/SYSTEM_MAP.json. Total: 14 subagents, ~1.26M subagent tokens,
 all Opus 4.8 / Sonnet 5 per the user's constraint.
+
+## 2026-07-21 09:00 — Proposal approved; executing the full design
+The user approved the 13-document structure and granted full autonomy to
+execute it completely. Plan: implementation worktree `docs/diataxis-operator-docs`
+from fetched master; authoring workflow (13 Opus writers, one per document,
+pipelined into adversarial accuracy verification against the code, Diátaxis
+purity review, and per-doc fixes, then a cross-doc consistency pass); retool
+docs/mkdocs.yml (still template-go branding) and nav; update README routing per
+proposal §6; build the mkdocs site strict locally; PR with squash merge after
+CI passes. Must-include fact from session 007: intentionally empty source root
+needs a tracked placeholder (secrets/.gitkeep) — lands in
+reference/reconciliation.md and how-to/decommission-a-scope.md.
