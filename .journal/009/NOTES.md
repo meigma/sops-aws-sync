@@ -8,3 +8,8 @@ started: 2026-07-21
 Goal for the session: Start a new journal session; the substantive task has not yet been supplied.
 Current state of the world: V1 is implemented and prerelease v0.1.1 has passed manual end-to-end acceptance; the repository is ready for the user's next request.
 Plan: Wait for the user's request, then proceed in small evidence-backed increments.
+
+## 2026-07-21 09:20 — YAML support plan drafted
+Goal for the session: Propose a streamlined plan for supporting YAML-encoded SOPS files alongside JSON.
+Current state of the world: Exact-commit discovery, domain path mapping, the application decryption port, the SOPS adapter, tests, CLI help, Action metadata, and operator docs are JSON-specific. SOPS already exposes stable JSON and YAML format selectors, while AWS values use canonical JSON.
+Plan: Deliver a hermetic YAML decryption proof, wire `.sops.yaml` and `.sops.yml` through source discovery with encoding-stable ownership, then update the public contract and run the existing complete gate. The proposal is recorded in `YAML_SUPPORT_PLAN.md`; implementation awaits approval.
