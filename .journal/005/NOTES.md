@@ -17,3 +17,6 @@ Committed the complete Phase 4 slice as `1a86894fa24be680761ae873c216cc40ae04335
 
 ## 2026-07-20 17:11 — Public verification authentication fix
 Addressed human review finding P1 on PR #10. Reproduced current `gh attestation verify` exit 4 with an isolated config and no token, then changed the optional `github-token` input to default to `${{ github.token }}` so callers can omit the input while `gh` still receives authenticated API access. Input parsing now fails before installation if the runner does not supply that metadata default, masks the token unconditionally, and retains the isolated `GH_CONFIG_DIR`. Added metadata/default/guard tests and installer proof that the workflow token reaches provenance verification; the suite now has 43 passing tests. `npm run all`, `npm audit`, the Go race suite, and all 18 Moon root tasks pass. The fix is committed as `bce4170` on `phase4/typescript-action`; PR #10 remains at the human review gate and must not be merged without explicit approval.
+
+## 2026-07-20 17:14 — Review fix hosted verification
+Hosted CI, GitHub Pages, and Kusari Inspector passed on exact PR head `bce41704d8cdfe6e0f78c30cfa6545ae6bc7ee93`; release dry-run and Pages deployment skipped as expected. PR #10 is mergeable with clean merge state and remains paused for human review.
