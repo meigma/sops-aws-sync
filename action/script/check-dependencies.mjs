@@ -12,8 +12,14 @@ const releaseManifest = JSON.parse(
     'utf8'
   )
 )
-const inputsSource = await readFile(
-  new URL('../src/inputs.ts', import.meta.url),
+const releaseConfig = JSON.parse(
+  await readFile(
+    new URL('../../release-please-config.json', import.meta.url),
+    'utf8'
+  )
+)
+const actionMetadata = await readFile(
+  new URL('../../action.yml', import.meta.url),
   'utf8'
 )
 const packages = Object.keys(lock.packages ?? {})
@@ -27,14 +33,38 @@ if (forbidden.length > 0) {
   throw new Error('Action dependency graph must not contain an AWS SDK')
 }
 
-const compatibleVersion = /const compatibleCliVersion = '([^']+)'/.exec(
-  inputsSource
-)?.[1]
+const compatibleVersion =
+  /^ {4}default: ([^\s#]+) # x-release-please-version$/m.exec(
+    actionMetadata
+  )?.[1]
 if (
   packageMetadata.version !== releaseManifest['.'] ||
   compatibleVersion !== packageMetadata.version
 ) {
   throw new Error(
-    'Action package, embedded CLI, and repository release versions must match'
+    'Action package, metadata CLI, and repository release versions must match'
   )
+}
+
+const extraFiles = releaseConfig.packages?.['.']?.['extra-files'] ?? []
+const expectedExtraFiles = [
+  ['generic', 'action.yml', undefined],
+  ['json', 'action/package.json', '$.version'],
+  ['json', 'action/package-lock.json', '$.version'],
+  ['json', 'action/package-lock.json', "$['packages'][''].version"]
+]
+
+for (const [type, path, jsonpath] of expectedExtraFiles) {
+  const configured = extraFiles.some(
+    (file) =>
+      file.type === type &&
+      file.path === path &&
+      (jsonpath === undefined || file.jsonpath === jsonpath)
+  )
+
+  if (!configured) {
+    throw new Error(
+      `Release Please must update ${path}${jsonpath ? ` at ${jsonpath}` : ''}`
+    )
+  }
 }

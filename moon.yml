@@ -83,12 +83,37 @@ tasks:
     options:
       cache: false
 
+  race:
+    command: 'go test -race ./cmd/... ./internal/...'
+    inputs:
+      - '@group(goSources)'
+    options:
+      cache: false
+
+  vuln:
+    command: 'go tool govulncheck ./cmd/... ./internal/...'
+    inputs:
+      - '@group(goSources)'
+    options:
+      cache: false
+
+  workflows:
+    command: 'go tool actionlint'
+    inputs:
+      - '@group(goSources)'
+      - '@group(releaseConfig)'
+    options:
+      cache: false
+
   check:
     deps:
       - 'root:format'
       - 'root:lint'
       - 'root:build'
       - 'root:test'
+      - 'root:race'
+      - 'root:vuln'
+      - 'root:workflows'
       - 'root:godoc'
       - 'action:check'
       - 'docs:build'

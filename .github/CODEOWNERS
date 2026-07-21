@@ -1,0 +1,9 @@
+# The Action and privileged automation are release-security boundaries.
+/action.yml @jmgilman
+/action/ @jmgilman
+/.github/workflows/ @jmgilman
+/.github/scripts/ @jmgilman
+/.github/repository-settings.toml @jmgilman
+/.goreleaser.yaml @jmgilman
+/ghd.toml @jmgilman
+/release-please-config.json @jmgilman

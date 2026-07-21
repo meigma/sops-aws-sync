@@ -35274,7 +35274,6 @@ function stringProperty$1(value, key, label) {
     return candidate;
 }
 
-const compatibleCliVersion = '0.1.1';
 /** readInputs totally parses all Action inputs and workflow defaults. */
 function readInputs(reader, environment) {
     const mode = parseMode(input(reader, 'mode', 'plan'));
@@ -35317,7 +35316,7 @@ function readInputs(reader, environment) {
             : DurationValue.parse(verificationTimeout, 'Input verification-timeout'),
         allowEmpty: booleanInput(reader, 'allow-empty'),
         showResourceNames: booleanInput(reader, 'show-resource-names'),
-        cliVersion: ExactVersion.parse(input(reader, 'cli-version', compatibleCliVersion)),
+        cliVersion: ExactVersion.parse(input(reader, 'cli-version')),
         githubToken: token,
         workspace: AbsolutePath.parse(workspace, 'GITHUB_WORKSPACE'),
         runnerTemp: AbsolutePath.parse(runnerTemp, 'RUNNER_TEMP'),

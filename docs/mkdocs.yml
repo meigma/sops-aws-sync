@@ -35,6 +35,10 @@ theme:
 
 nav:
   - Home: index.md
+  - Configuration: configuration.md
+  - GitHub Action: github-action.md
+  - Operations and security: operations-and-security.md
+  - Release verification: release-verification.md
 
 plugins:
   - search
