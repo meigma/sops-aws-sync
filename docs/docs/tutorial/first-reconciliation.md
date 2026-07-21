@@ -49,7 +49,7 @@ Confirm the CLI is installed:
 
 ```console
 $ sops-aws-sync version
-sops-aws-sync 0.1.1 (a1b2c3d) built 2026-07-20T00:00:00Z
+sops-aws-sync 1.2.3 (a1b2c3d) built 2026-07-20T00:00:00Z
 ```
 
 The exact version, commit, and date depend on the release you installed; any
@@ -134,7 +134,7 @@ Open `plan.json`:
 ```json
 {
   "schema_version": "sops-aws-sync/report/v1",
-  "tool_version": "0.1.1",
+  "tool_version": "1.2.3",
   "git_revision": "6f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6",
   "status": "drift",
   "counts": {

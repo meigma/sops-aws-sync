@@ -89,7 +89,7 @@ steps:
       role-to-assume: ${{ secrets.SOPS_AWS_SYNC_ROLE_ARN }}
       aws-region: us-west-2
 
-  - uses: meigma/sops-aws-sync@<full-release-commit-sha> # v0.1.1
+  - uses: meigma/sops-aws-sync@<full-release-commit-sha> # vX.Y.Z
     with:
       mode: sync
       source-root: secrets

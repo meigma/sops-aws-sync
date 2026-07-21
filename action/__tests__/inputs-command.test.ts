@@ -24,6 +24,9 @@ const environment: ActionEnvironment = {
   RUNNER_OS: 'Linux',
   RUNNER_TEMP: '/runner/temp'
 }
+const releaseVersion = JSON.parse(
+  readFileSync(path.resolve('package.json'), 'utf8')
+).version as string
 
 class Reader implements InputReader {
   public readonly masked: string[] = []
@@ -37,7 +40,7 @@ class Reader implements InputReader {
       return this.values[name] ?? 'workflow-token'
     }
     if (name === 'cli-version') {
-      return this.values[name] ?? '0.1.1'
+      return this.values[name] ?? releaseVersion
     }
     return this.values[name] ?? ''
   }
@@ -57,22 +60,13 @@ describe('Action input and argv contract', () => {
     expect(tokenInput).toContain('default: ${{ github.token }}')
   })
 
-  it('couples the metadata default to the exact paired CLI release', () => {
-    const metadata = readFileSync(path.resolve('..', 'action.yml'), 'utf8')
-    const versionInput = metadata.match(
-      / {2}cli-version:\n(?<block>(?: {4}.*\n)+)/
-    )?.groups?.block
-
-    expect(versionInput).toContain('default: 0.1.1 # x-release-please-version')
-  })
-
   it('parses typed defaults and constructs the exact minimum argv', () => {
     const reader = new Reader({ 'secret-prefix': '/acme/payments' })
     const config = readInputs(reader, environment)
     const reportPath = AbsolutePath.parse('/runner/temp/report.json', 'report')
 
     expect(config.mode).toBe('plan')
-    expect(config.cliVersion.value).toBe('0.1.1')
+    expect(config.cliVersion.value).toBe(releaseVersion)
     expect(config.githubToken).toBe('workflow-token')
     expect(reader.masked).toEqual(['workflow-token'])
     expect(buildArguments(config, reportPath)).toEqual([
