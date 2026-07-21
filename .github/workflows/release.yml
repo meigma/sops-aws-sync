@@ -18,7 +18,7 @@ jobs:
     name: Resolve Release
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
     outputs:
       tag: ${{ steps.release-tag.outputs.tag }}
       version: ${{ steps.release-tag.outputs.version }}
@@ -47,7 +47,7 @@ jobs:
           RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
         run: |
           for _ in $(seq 1 30); do
-            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
+            if gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == true) | .tag_name' 2>/dev/null | grep -Fqx -- "$RELEASE_TAG"; then
               exit 0
             fi
             sleep 10
