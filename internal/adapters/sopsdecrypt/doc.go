@@ -1,2 +1,2 @@
-// Package sopsdecrypt decrypts SOPS JSON through its stable in-process binding.
+// Package sopsdecrypt decrypts SOPS JSON and YAML through its stable in-process binding.
 package sopsdecrypt

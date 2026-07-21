@@ -103,7 +103,7 @@ func (RandomTokenSource) NewToken() (string, error) {
 type ReconcileInput struct {
 	// RepositoryID is the stable ownership identity.
 	RepositoryID string
-	// SourceRoot selects committed SOPS JSON documents.
+	// SourceRoot selects committed SOPS JSON or YAML documents.
 	SourceRoot string
 	// SecretPrefix defines the AWS naming and ownership boundary.
 	SecretPrefix string

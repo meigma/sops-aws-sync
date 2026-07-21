@@ -12,10 +12,29 @@ import (
 
 const (
 	sopsJSONSuffix         = ".sops.json"
+	sopsYAMLSuffix         = ".sops.yaml"
+	sopsYMLSuffix          = ".sops.yml"
 	maximumSecretNameSize  = 512
 	maximumSecretValueSize = 65_536
 	gitSHA1HexLength       = 40
 )
+
+// SourceFormat identifies the encoding of one supported SOPS source document.
+type SourceFormat uint8
+
+const (
+	// SourceFormatJSON identifies a JSON-encoded SOPS document.
+	SourceFormatJSON SourceFormat = iota + 1
+	// SourceFormatYAML identifies a YAML-encoded SOPS document.
+	SourceFormatYAML
+)
+
+// SourceFormatFromPath identifies a supported SOPS format from its exact path suffix.
+func SourceFormatFromPath(sourcePath string) (SourceFormat, bool) {
+	format, _, ok := sourceFormatAndSuffix(sourcePath)
+
+	return format, ok
+}
 
 // SecretName is a validated AWS Secrets Manager name.
 type SecretName struct {
@@ -212,10 +231,13 @@ func MapSourcePath(sourceRoot, secretPrefix, sourcePath string) (SecretName, Sou
 	if err != nil {
 		return SecretName{}, SourceIdentity{}, err
 	}
-	if !strings.HasSuffix(relative, sopsJSONSuffix) {
-		return SecretName{}, SourceIdentity{}, fmt.Errorf("source path must end in %s", sopsJSONSuffix)
+	_, suffix, ok := sourceFormatAndSuffix(relative)
+	if !ok {
+		return SecretName{}, SourceIdentity{}, errors.New(
+			"source path must end in .sops.json, .sops.yaml, or .sops.yml",
+		)
 	}
-	stem := strings.TrimSuffix(relative, sopsJSONSuffix)
+	stem := strings.TrimSuffix(relative, suffix)
 	if stem == "" {
 		return SecretName{}, SourceIdentity{}, errors.New("source path has an empty relative stem")
 	}
@@ -227,12 +249,30 @@ func MapSourcePath(sourceRoot, secretPrefix, sourcePath string) (SecretName, Sou
 	if err != nil {
 		return SecretName{}, SourceIdentity{}, fmt.Errorf("map source path: %w", err)
 	}
-	identity, err := NewSourceIdentity(cleanSource)
+	identityPath := cleanSource
+	if suffix != sopsJSONSuffix {
+		identityPath = strings.TrimSuffix(cleanSource, suffix) + sopsJSONSuffix
+	}
+	identity, err := NewSourceIdentity(identityPath)
 	if err != nil {
 		return SecretName{}, SourceIdentity{}, err
 	}
 
 	return name, identity, nil
+}
+
+// sourceFormatAndSuffix returns the encoding and exact supported suffix for one path.
+func sourceFormatAndSuffix(sourcePath string) (SourceFormat, string, bool) {
+	switch {
+	case strings.HasSuffix(sourcePath, sopsJSONSuffix):
+		return SourceFormatJSON, sopsJSONSuffix, true
+	case strings.HasSuffix(sourcePath, sopsYAMLSuffix):
+		return SourceFormatYAML, sopsYAMLSuffix, true
+	case strings.HasSuffix(sourcePath, sopsYMLSuffix):
+		return SourceFormatYAML, sopsYMLSuffix, true
+	default:
+		return 0, "", false
+	}
 }
 
 // cleanSourceRoot validates a repository-relative source directory.

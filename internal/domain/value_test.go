@@ -9,18 +9,36 @@ import (
 	"github.com/meigma/sops-aws-sync/internal/domain"
 )
 
-// TestMapSourcePath proves deterministic name and source identity derivation.
+// TestMapSourcePath proves supported encodings share deterministic name and source identity derivation.
 func TestMapSourcePath(t *testing.T) {
 	t.Parallel()
 
-	name, source, err := domain.MapSourcePath(
-		"secrets",
-		"/acme/payments",
-		"secrets/production/database.sops.json",
-	)
-	require.NoError(t, err)
-	assert.Equal(t, "/acme/payments/production/database", name.Value())
-	assert.Len(t, source.Value(), 64)
+	tests := []struct {
+		name       string
+		path       string
+		wantFormat domain.SourceFormat
+	}{
+		{name: "JSON", path: "secrets/production/database.sops.json", wantFormat: domain.SourceFormatJSON},
+		{name: "long YAML suffix", path: "secrets/production/database.sops.yaml", wantFormat: domain.SourceFormatYAML},
+		{name: "short YAML suffix", path: "secrets/production/database.sops.yml", wantFormat: domain.SourceFormatYAML},
+	}
+	var identity string
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			name, source, err := domain.MapSourcePath("secrets", "/acme/payments", test.path)
+			require.NoError(t, err)
+			assert.Equal(t, "/acme/payments/production/database", name.Value())
+			assert.Len(t, source.Value(), 64)
+			format, supported := domain.SourceFormatFromPath(test.path)
+			assert.True(t, supported)
+			assert.Equal(t, test.wantFormat, format)
+			if test.wantFormat == domain.SourceFormatJSON {
+				identity = source.Value()
+				return
+			}
+			assert.Equal(t, identity, source.Value(), "encoding-only changes must preserve source ownership")
+		})
+	}
 }
 
 // TestClassifyDirectCoversDesiredNameSafetyStates proves the Phase 2 classifier fails closed.

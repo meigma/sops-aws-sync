@@ -32,16 +32,72 @@ func (source *fakeSource) Load(
 
 // fakeDecrypter returns one fixed canonical domain value.
 type fakeDecrypter struct {
-	value domain.SecretValue
-	err   error
+	value   domain.SecretValue
+	err     error
+	formats []domain.SourceFormat
 }
 
-// DecryptJSON returns the configured canonical value.
-func (decrypter *fakeDecrypter) DecryptJSON(
+// Decrypt returns the configured canonical value and records its source format.
+func (decrypter *fakeDecrypter) Decrypt(
 	_ context.Context,
+	format domain.SourceFormat,
 	_ []byte,
 ) (domain.SecretValue, error) {
+	decrypter.formats = append(decrypter.formats, format)
+
 	return decrypter.value, decrypter.err
+}
+
+// TestBuildDesiredSnapshotCarriesSourceFormats proves adapters receive committed encoding metadata.
+func TestBuildDesiredSnapshotCarriesSourceFormats(t *testing.T) {
+	t.Parallel()
+
+	value, err := domain.NewSecretValue([]byte(`{"value":"desired"}`))
+	require.NoError(t, err)
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	decrypter := &fakeDecrypter{value: value}
+	source := &fakeSource{snapshot: application.SourceSnapshot{
+		Revision: revision,
+		Documents: []application.EncryptedDocument{
+			{Path: "secrets/a.sops.json", Format: domain.SourceFormatJSON, Data: []byte("json")},
+			{Path: "secrets/b.sops.yaml", Format: domain.SourceFormatYAML, Data: []byte("yaml")},
+		},
+	}}
+
+	_, err = application.BuildDesiredSnapshot(
+		context.Background(),
+		source,
+		decrypter,
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []domain.SourceFormat{domain.SourceFormatJSON, domain.SourceFormatYAML}, decrypter.formats)
+}
+
+// TestBuildDesiredSnapshotRejectsCrossFormatCollision proves one logical stem cannot be declared twice.
+func TestBuildDesiredSnapshotRejectsCrossFormatCollision(t *testing.T) {
+	t.Parallel()
+
+	value, err := domain.NewSecretValue([]byte(`{"value":"desired"}`))
+	require.NoError(t, err)
+	revision, err := domain.NewRevision("0123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	source := &fakeSource{snapshot: application.SourceSnapshot{
+		Revision: revision,
+		Documents: []application.EncryptedDocument{
+			{Path: "secrets/value.sops.json", Format: domain.SourceFormatJSON, Data: []byte("json")},
+			{Path: "secrets/value.sops.yml", Format: domain.SourceFormatYAML, Data: []byte("yaml")},
+		},
+	}}
+
+	_, err = application.BuildDesiredSnapshot(
+		context.Background(),
+		source,
+		&fakeDecrypter{value: value},
+		application.DesiredInput{Revision: "HEAD", SourceRoot: "secrets", SecretPrefix: "/acme/payments"},
+	)
+	require.ErrorContains(t, err, "multiple source documents map to the same secret")
 }
 
 // sequenceTokens records deterministic fresh token allocation.
@@ -630,8 +686,8 @@ func TestSyncRebuildsWholePlanAfterHarmlessDrift(t *testing.T) {
 	source := &fakeSource{snapshot: application.SourceSnapshot{
 		Revision: revision,
 		Documents: []application.EncryptedDocument{
-			{Path: "secrets/a.sops.json", Data: []byte("encrypted-a")},
-			{Path: "secrets/b.sops.json", Data: []byte("encrypted-b")},
+			{Path: "secrets/a.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted-a")},
+			{Path: "secrets/b.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted-b")},
 		},
 	}}
 	snapshot, err := application.BuildDesiredSnapshot(context.Background(), source, &fakeDecrypter{value: value},
@@ -670,8 +726,8 @@ func TestSyncPreservesAppliedRestoreBookkeepingAcrossRebuilds(t *testing.T) {
 	source := &fakeSource{snapshot: application.SourceSnapshot{
 		Revision: revision,
 		Documents: []application.EncryptedDocument{
-			{Path: "secrets/a.sops.json", Data: []byte("encrypted-a")},
-			{Path: "secrets/b.sops.json", Data: []byte("encrypted-b")},
+			{Path: "secrets/a.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted-a")},
+			{Path: "secrets/b.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted-b")},
 		},
 	}}
 	snapshot, err := application.BuildDesiredSnapshot(
@@ -846,8 +902,10 @@ func newAppTestContext(t *testing.T) *appTestContext {
 	require.NoError(t, err)
 	desired := domain.NewDesiredSecret(name, sourceIdentity, value, revision)
 	source := &fakeSource{snapshot: application.SourceSnapshot{
-		Revision:  revision,
-		Documents: []application.EncryptedDocument{{Path: "secrets/database.sops.json", Data: []byte("encrypted")}},
+		Revision: revision,
+		Documents: []application.EncryptedDocument{{
+			Path: "secrets/database.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted"),
+		}},
 	}}
 	secrets := &memorySecrets{scope: applicationScope(t)}
 	tokens := &sequenceTokens{}
