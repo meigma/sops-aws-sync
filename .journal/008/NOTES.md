@@ -28,3 +28,19 @@ Action, release/supply-chain, design intent, tests-as-behavior) to build an
 operator-relevant system map. Workflow 2 runs three independent Diátaxis
 structure designers, a judge panel, and a synthesizer. Deliverable: proposal in
 `.journal/008/` plus final summary to the user.
+
+## 2026-07-20 22:15 — Workflow 1 complete; Workflow 2 launched
+Workflow 1 (understand-sops-aws-sync, run wf_62da5814-601) finished: seven
+readers (3 Opus 4.8, 4 Sonnet 5) produced structured operator-relevant maps —
+223 evidence-backed facts, 61 Diátaxis topic candidates, full configuration
+surface, failure modes, and mental-model invariants. Merged into
+scratchpad/system-map.json. Notable extractions: exit-code contract (2 drift
+opt-in, 3 invalid, 4 conflict, 5 apply-failed, 6 verification, 130 interrupted),
+scope-identity digest rename hazard, ownership tags fail-closed conflict
+semantics, AllowEmpty one-time gate, idempotency-token asymmetry
+(create/update retry vs delete/restore fail-safe), Action's strict allowlist
+report parsing and fail-closed exit/report cross-check.
+Workflow 2 (design-diataxis-structure, run wf_110d0596-49f) launched: three
+Opus designers (mental-model-first, operator-task-first, minimalist-curator) →
+three-criterion judge panel (Diátaxis purity, operator value, economy/maturity)
+→ Opus synthesizer producing the final proposal markdown.
