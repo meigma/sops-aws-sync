@@ -33,7 +33,7 @@ var (
 // runtimeRunner is the sole production dependency composition adapter.
 type runtimeRunner struct {
 	newSource    func(string, int64) (application.SourceRepository, error)
-	newDecrypter func(int) (application.JSONDecrypter, error)
+	newDecrypter func(int) (application.DocumentDecrypter, error)
 	loadSecrets  func(context.Context, secretsmanager.LoadOptions) (application.SecretsManager, error)
 }
 
@@ -138,7 +138,7 @@ func (runner runtimeRunner) withDefaults() runtimeRunner {
 		}
 	}
 	if runner.newDecrypter == nil {
-		runner.newDecrypter = func(maximumBytes int) (application.JSONDecrypter, error) {
+		runner.newDecrypter = func(maximumBytes int) (application.DocumentDecrypter, error) {
 			return sopsdecrypt.New(maximumBytes)
 		}
 	}

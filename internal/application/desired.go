@@ -13,6 +13,8 @@ import (
 type EncryptedDocument struct {
 	// Path is the normalized repository-relative source path.
 	Path string
+	// Format identifies the source encoding selected from the path suffix.
+	Format domain.SourceFormat
 	// Data is an isolated copy of the encrypted Git blob.
 	Data []byte
 }
@@ -21,7 +23,7 @@ type EncryptedDocument struct {
 type SourceSnapshot struct {
 	// Revision is the exact commit loaded by the source adapter.
 	Revision domain.Revision
-	// Documents are the selected regular SOPS JSON blobs.
+	// Documents are the selected regular SOPS JSON or YAML blobs.
 	Documents []EncryptedDocument
 }
 
@@ -30,16 +32,16 @@ type SourceRepository interface {
 	Load(ctx context.Context, revision, sourceRoot string) (SourceSnapshot, error)
 }
 
-// JSONDecrypter converts encrypted JSON into a validated canonical value.
-type JSONDecrypter interface {
-	DecryptJSON(ctx context.Context, encrypted []byte) (domain.SecretValue, error)
+// DocumentDecrypter converts an encrypted source document into a validated canonical value.
+type DocumentDecrypter interface {
+	Decrypt(ctx context.Context, format domain.SourceFormat, encrypted []byte) (domain.SecretValue, error)
 }
 
 // DesiredInput configures committed desired-state construction.
 type DesiredInput struct {
 	// Revision is the commit-ish resolved by the source repository.
 	Revision string
-	// SourceRoot selects repository-relative SOPS JSON documents.
+	// SourceRoot selects repository-relative SOPS JSON or YAML documents.
 	SourceRoot string
 	// SecretPrefix is joined to each selected relative source stem.
 	SecretPrefix string
@@ -65,7 +67,7 @@ func (snapshot DesiredSnapshot) copySecrets() []domain.DesiredSecret {
 func BuildDesiredSnapshot(
 	ctx context.Context,
 	sourceRepository SourceRepository,
-	decrypter JSONDecrypter,
+	decrypter DocumentDecrypter,
 	input DesiredInput,
 ) (DesiredSnapshot, error) {
 	if sourceRepository == nil || decrypter == nil {
@@ -80,7 +82,7 @@ func BuildDesiredSnapshot(
 	}
 	desired := make([]domain.DesiredSecret, 0, len(snapshot.Documents))
 	for _, document := range snapshot.Documents {
-		value, decryptErr := decrypter.DecryptJSON(ctx, document.Data)
+		value, decryptErr := decrypter.Decrypt(ctx, document.Format, document.Data)
 		if decryptErr != nil {
 			return DesiredSnapshot{}, fmt.Errorf("decrypt committed source: %w", decryptErr)
 		}

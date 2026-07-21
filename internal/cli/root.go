@@ -99,7 +99,7 @@ func NewRootCommand(options Options) *cobra.Command {
 	var configPath string
 	root := &cobra.Command{
 		Use:           "sops-aws-sync",
-		Short:         "Reconcile committed SOPS JSON with AWS Secrets Manager",
+		Short:         "Reconcile committed SOPS documents with AWS Secrets Manager",
 		Version:       options.Build.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,

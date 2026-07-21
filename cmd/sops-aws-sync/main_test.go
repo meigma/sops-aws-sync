@@ -35,7 +35,7 @@ func (source *setupSource) Load(
 	return application.SourceSnapshot{
 		Revision: revision,
 		Documents: []application.EncryptedDocument{
-			{Path: "secrets/value.sops.json", Data: []byte("encrypted")},
+			{Path: "secrets/value.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted")},
 		},
 	}, nil
 }
@@ -59,9 +59,10 @@ func (configurationSetupError) ConfigurationFailure() bool {
 	return true
 }
 
-// DecryptJSON returns one canonical value unless configured to fail.
-func (decrypter *setupDecrypter) DecryptJSON(
+// Decrypt returns one canonical value unless configured to fail.
+func (decrypter *setupDecrypter) Decrypt(
 	_ context.Context,
+	_ domain.SourceFormat,
 	_ []byte,
 ) (domain.SecretValue, error) {
 	*decrypter.events = append(*decrypter.events, "decrypt")
@@ -128,7 +129,7 @@ func setupRunner(events *[]string, decryptErr, loadErr error) runtimeRunner {
 		newSource: func(_ string, _ int64) (application.SourceRepository, error) {
 			return &setupSource{events: events}, nil
 		},
-		newDecrypter: func(_ int) (application.JSONDecrypter, error) {
+		newDecrypter: func(_ int) (application.DocumentDecrypter, error) {
 			return &setupDecrypter{events: events, err: decryptErr}, nil
 		},
 		loadSecrets: func(

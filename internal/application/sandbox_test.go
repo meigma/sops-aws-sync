@@ -54,7 +54,7 @@ func TestAWSSandboxCompleteLifecycleAndVerification(t *testing.T) {
 	source := &fakeSource{snapshot: application.SourceSnapshot{
 		Revision: revision,
 		Documents: []application.EncryptedDocument{
-			{Path: "secrets/secret.sops.json", Data: []byte("encrypted")},
+			{Path: "secrets/secret.sops.json", Format: domain.SourceFormatJSON, Data: []byte("encrypted")},
 		},
 	}}
 	decrypter := &fakeDecrypter{value: initialValue}

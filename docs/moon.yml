@@ -8,7 +8,7 @@ tags:
 
 project:
   title: 'sops-aws-sync docs'
-  description: 'Documentation for reconciling committed SOPS JSON with AWS Secrets Manager.'
+  description: 'Documentation for reconciling committed SOPS documents with AWS Secrets Manager.'
   owner: 'meigma'
   maintainers:
     - 'meigma'

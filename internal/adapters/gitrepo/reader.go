@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"strings"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -16,8 +15,6 @@ import (
 	"github.com/meigma/sops-aws-sync/internal/application"
 	"github.com/meigma/sops-aws-sync/internal/domain"
 )
-
-const sopsJSONSuffix = ".sops.json"
 
 // Reader loads selected blobs from a local repository's committed object database.
 type Reader struct {
@@ -101,13 +98,14 @@ func (reader *Reader) readDocuments(
 		if err != nil {
 			return nil, fmt.Errorf("walk committed source: %w", err)
 		}
-		if !strings.HasSuffix(name, sopsJSONSuffix) {
+		format, supported := domain.SourceFormatFromPath(name)
+		if !supported {
 			continue
 		}
 		if entry.Mode != filemode.Regular {
 			return nil, fmt.Errorf("selected source %q is not a regular Git blob", name)
 		}
-		document, err := reader.readDocument(tree, sourceRoot, name)
+		document, err := reader.readDocument(tree, sourceRoot, name, format)
 		if err != nil {
 			return nil, err
 		}
@@ -122,6 +120,7 @@ func (reader *Reader) readDocument(
 	tree *object.Tree,
 	sourceRoot,
 	name string,
+	format domain.SourceFormat,
 ) (application.EncryptedDocument, error) {
 	file, err := tree.File(name)
 	if err != nil {
@@ -147,5 +146,5 @@ func (reader *Reader) readDocument(
 		documentPath = path.Join(sourceRoot, name)
 	}
 
-	return application.EncryptedDocument{Path: documentPath, Data: data}, nil
+	return application.EncryptedDocument{Path: documentPath, Format: format, Data: data}, nil
 }
