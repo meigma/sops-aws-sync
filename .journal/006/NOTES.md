@@ -22,3 +22,10 @@ Committed the Phase 5 pre-merge slice as `db3ab62cb967e12263b47b336fbe26e8ecea90
 Verification on the reviewed commit passed: all 25 `root:check` tasks, all 44 Action tests plus coverage and bundle drift, Go race tests, `govulncheck` with no called vulnerabilities, `actionlint`, strict MkDocs build, dependency policy, and `git diff --check`. Go was raised from 1.26.4 to 1.26.5 because the initial vulnerability scan identified a standard-library ECH privacy issue fixed in 1.26.5.
 
 The remaining work is hosted PR evidence followed by the explicit review gate. Exact merged-SHA release and AWS evidence cannot run before merge, and live branch/environment protection remains blocked by the repository's private-plan API restriction plus absent release-App and caller-owned AWS OIDC configuration.
+
+## 2026-07-20 18:08 — PR evidence green; paused for review
+Opened PR #11, `feat: complete V1 hardening and acceptance`, targeting `master`. Hosted evidence exposed and corrected two rehearsal-only defects: ShellCheck rejected an unused polling-loop variable, and GoReleaser's main-module proxy could not resolve a private repository at a synthetic local-only tag. Follow-up commits `0691a6b` and `5329742` respectively fixed those issues without changing the V1 contract.
+
+The final reviewed head is `5329742056624d31ecfe0a3936161856318cff22`. PR checks are green: CI, Binary Release Dry Run, GitHub Pages, and Kusari Inspector all succeeded; the Pages deployment job was expectedly skipped for the pull request. The hosted release dry run took 12m9s and proved the four supported binaries, checksums, SBOMs, committed Action bundle, asset staging, and binary version smoke test. The exact open-source GoReleaser 2.17.0 rehearsal was also reproduced locally, including checksum verification of the downloaded GoReleaser binary; its temporary tag was removed.
+
+PR #11 is open, mergeable, and clean. Stop here for user review. Do not squash merge, publish a release, configure account billing/visibility, create GitHub credentials, or run AWS acceptance without explicit authorization and the missing external configuration.
