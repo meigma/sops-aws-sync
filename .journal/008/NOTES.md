@@ -74,3 +74,21 @@ proposal §6; build the mkdocs site strict locally; PR with squash merge after
 CI passes. Must-include fact from session 007: intentionally empty source root
 needs a tracked placeholder (secrets/.gitkeep) — lands in
 reference/reconciliation.md and how-to/decommission-a-scope.md.
+
+## 2026-07-21 10:10 — Docs authored, verified, and PR opened
+The authoring workflow (run wf_cc494100-66d, 55 agents, ~4.4M tokens) wrote all
+14 documents, adversarially fact-checked each against the code, reviewed each
+for Diátaxis purity and spec compliance, applied fixes, and ran a whole-set
+consistency pass. Notable corrections found by verification: the spec's claim
+that sync lacks an Args validator was wrong (all commands set cobra.NoArgs —
+spec updated); GITHUB_SHA/GITHUB_REPOSITORY are always required by the Action
+even when revision/repository-id are set; the attestation subject is each
+binary via subject-checksums expansion, not a hash-of-hashes; the Action's
+"unsupported exit status" message is unreachable (validateExit rejects first) —
+I removed it from diagnose-and-recover myself after confirming in main.ts.
+I read all 14 documents personally. Retooled docs/mkdocs.yml nav, removed the
+four legacy pages, and rewrote the README documentation routing. Local
+verification: moon docs:build (mkdocs --strict) and moon root:check both pass.
+Opened PR #14 (docs: replace operator documentation with Diátaxis structure)
+from branch docs/diataxis-operator-docs; awaiting CI, then squash merge per the
+user's full-autonomy grant.
