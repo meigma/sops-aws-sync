@@ -1,39 +1,94 @@
 ---
-title: sops-aws-sync
+title: sops-aws-sync operator documentation
 ---
 
-# sops-aws-sync
+# sops-aws-sync operator documentation
 
-`sops-aws-sync` reconciles committed SOPS-encrypted JSON or YAML documents with
-an explicitly owned AWS Secrets Manager namespace. One selected `.sops.json`,
-`.sops.yaml`, or `.sops.yml` file maps deterministically to one canonical JSON
-`SecretString`.
+sops-aws-sync is a Go command-line tool paired with a supply-chain-verified
+Node 24 GitHub Action. It reconciles the SOPS-encrypted `*.sops.json` documents
+committed at one exact Git commit into an explicitly owned namespace in AWS
+Secrets Manager, issuing create, update, restore, and scheduled-delete
+operations so that AWS matches what Git holds. `plan` is read-only and reports
+what would change; `sync` mutates and then always verifies that the scope
+converged.
 
-The Go CLI owns Git reads, in-process SOPS decryption, AWS observation,
-planning, mutation, and verification. The Node 24 Action is a thin adapter that
-installs a checksum- and provenance-verified exact CLI release, constructs a
-closed argument list, invokes the CLI without a shell, and publishes only the
-validated redacted report.
+The one sentence that governs everything else: the committed Git revision is
+the desired state — you change AWS by committing and pushing `*.sops.json`
+files, never by editing secrets directly. [About the reconciliation
+model](explanation/reconciliation-model.md) explains why.
 
-Start with:
+## Read before you run `sync`
 
-- [Configuration](configuration.md) for the CLI contract and precedence;
-- [GitHub Action](github-action.md) for trusted workflow use and OIDC;
-- [Operations and security](operations-and-security.md) for IAM, KMS,
-  consistency, interruption, logging, and recovery; and
-- [Release verification](release-verification.md) before executing a release
-  artifact.
+Five invariants an operator must hold. Each is a pointer; the linked page owns
+the full explanation.
 
-## Reconciliation boundary
+- **Commit is the source of truth.** `sync` acts on the committed revision, not
+  your working tree, index, or unpushed changes. →
+  [reconciliation model](explanation/reconciliation-model.md)
+- **Scope inputs are an identity, not a setting.** Changing `repository-id`,
+  `source-root`, or `secret-prefix` mints a new scope that owns nothing prior
+  and silently abandons the old secrets. →
+  [ownership and scope](explanation/ownership-and-scope.md)
+- **Emptying the source tree does not mass-delete.** A desired state with no
+  files and pending deletions is refused unless you explicitly authorize it. →
+  [decommission a scope](how-to/decommission-a-scope.md)
+- **One writer per scope.** AWS offers no cross-secret transaction, so
+  correctness depends on exactly one active `sync` per scope. →
+  [consistency and recovery](explanation/consistency-and-recovery.md)
+- **Not everything in a `.sops.json` file is secret.** SOPS encrypts values,
+  not keys, paths, or metadata; those are plaintext in Git. →
+  [security and trust](explanation/security-and-trust.md)
 
-Desired state is the tree of one resolved Git commit, never the working tree,
-index, or untracked files. Selected documents must be regular `.sops.json`,
-`.sops.yaml`, or `.sops.yml` blobs. Every document must decrypt with a valid
-SOPS MAC and become exactly one top-level object in the RFC 8785
-canonicalization profile. YAML inputs must contain one mapping with
-JSON-compatible values.
+## Find your way
 
-The tool creates missing owned secrets, updates changed values, restores
-reintroduced secrets, and schedules removed secrets for deletion with a
-recovery window. It never adopts a foreign same-name secret, force-deletes a
-secret, manages rotation or replication, or provisions IAM, OIDC, or KMS.
+- **Understand how it works** — the four explanations are the backbone of this
+  set; read them in order:
+  [the reconciliation model](explanation/reconciliation-model.md),
+  [ownership and scope](explanation/ownership-and-scope.md),
+  [consistency and recovery](explanation/consistency-and-recovery.md), and
+  [security and trust](explanation/security-and-trust.md).
+- **Learn by doing** —
+  [your first reconciliation](tutorial/first-reconciliation.md) against a
+  throwaway scope.
+- **Deploy in CI** —
+  [deploy with GitHub Actions](how-to/deploy-with-github-actions.md), then
+  [grant AWS access](how-to/grant-aws-access.md).
+- **Run the CLI directly** —
+  [verify a release binary](how-to/verify-a-release-binary.md), then the
+  [tutorial](tutorial/first-reconciliation.md).
+- **Look something up** — the three references:
+  [configuration](reference/configuration.md),
+  [reconciliation](reference/reconciliation.md), and
+  [results and exit codes](reference/results.md).
+- **A run failed** —
+  [diagnose and recover](how-to/diagnose-and-recover.md).
+- **Remove secrets** —
+  [decommission or empty a scope](how-to/decommission-a-scope.md).
+
+## What this tool is not
+
+- **Not a secret editor.** It writes only what Git holds and reconciles AWS
+  toward it. → [reconciliation model](explanation/reconciliation-model.md)
+- **Not an AWS authenticator.** Bring credentials through the standard AWS SDK
+  chain; the tool accepts no credential inputs. →
+  [grant AWS access](how-to/grant-aws-access.md)
+- **Not a manager of special secrets.** It refuses secrets that are under
+  rotation, replicated, or AWS service-owned rather than touching them. →
+  [ownership and scope](explanation/ownership-and-scope.md)
+- **No force delete.** Every deletion is a scheduled deletion inside a recovery
+  window. → [reconciliation model](explanation/reconciliation-model.md)
+- **JSON only.** It reads `*.sops.json` documents and ignores every other
+  format. → [reconciliation reference](reference/reconciliation.md)
+- **Linux and macOS only**, on amd64 and arm64. →
+  [configuration reference](reference/configuration.md)
+
+## Elsewhere
+
+- The repository
+  [README](https://github.com/meigma/sops-aws-sync/blob/master/README.md) has
+  the copy-paste Action snippet and build-from-source instructions.
+- [SECURITY.md](https://github.com/meigma/sops-aws-sync/blob/master/SECURITY.md)
+  covers private vulnerability reporting.
+
+These pages serve operators who deploy and run the tool. Contributor and
+release-pipeline internals are out of scope.
