@@ -29,3 +29,8 @@ The final branch includes the core format/decryption and mapping slice (`0df8fd2
 Local `mise exec -- moon run root:check --summary minimal` passed all 25 tasks, including Go tests/race/lint/godoc/vulnerability checks, workflow lint, docs, Action tests/coverage/typecheck/lint/audit, and bundle parity. Hosted CI, GitHub Pages, Kusari Inspector, and Binary Release Dry Run all passed on exact head `596570a`; PR #13 reports a clean merge state. No live AWS run was needed because the AWS and reconciliation layers are unchanged.
 
 Next: wait for human review. Do not merge or close the session without explicit approval.
+
+## 2026-07-21 09:56 — Close
+The user approved PR #13, which was squash-merged at `f602168fada2a8fe8e82ba6116bf3492eae1dbe1`. Local `master` was fast-forwarded to the merge commit and the `feat/yaml-sops-support` Worktrunk worktree was removed.
+
+Session 009 is complete. `SUMMARY.md`, the journal index, and durable technical notes now capture the YAML input contract, canonical JSON convergence, encoding-stable ownership, and verification evidence. No release was performed.
