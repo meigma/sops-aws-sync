@@ -1,6 +1,7 @@
 package sopsdecrypt
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -73,10 +74,24 @@ func TestDecryptYAMLVerifiesMACAndMatchesJSON(t *testing.T) {
 
 	value, err := decrypter.Decrypt(context.Background(), domain.SourceFormatYAML, fixture)
 	require.NoError(t, err)
-	assert.Equal(t,
+	assert.JSONEq(t,
 		`{"credential":"phase1-plaintext-sentinel","nested":{"a":"value","b":true},"z":1}`,
 		string(value.CopyCanonicalJSON()),
 	)
+}
+
+// TestDecryptYAMLRejectsIntegrityMismatch proves plaintext-tree tampering cannot bypass the SOPS MAC.
+func TestDecryptYAMLRejectsIntegrityMismatch(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY", "AGE-SECRET-KEY-"+"1G0Q5K9TV4REQ3ZSQRMTMG8NSWQGYT0T7TZ33RAZEE0GZYVZN0APSU24RK7")
+	fixture, err := os.ReadFile("testdata/database.sops.yaml")
+	require.NoError(t, err)
+	tampered := bytes.Replace(fixture, []byte("sops:\n"), []byte("marker_unencrypted: tampered\nsops:\n"), 1)
+	require.NotEqual(t, fixture, tampered)
+	decrypter, err := New(8 * 1024 * 1024)
+	require.NoError(t, err)
+
+	_, err = decrypter.Decrypt(context.Background(), domain.SourceFormatYAML, tampered)
+	require.ErrorContains(t, err, "SOPS document decryption failed")
 }
 
 // TestDecryptRejectsYAMLOutsideTheJSONContract proves unsupported YAML fails closed.

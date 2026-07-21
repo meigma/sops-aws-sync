@@ -22,9 +22,15 @@ func TestMapSourcePath(t *testing.T) {
 		{name: "long YAML suffix", path: "secrets/production/database.sops.yaml", wantFormat: domain.SourceFormatYAML},
 		{name: "short YAML suffix", path: "secrets/production/database.sops.yml", wantFormat: domain.SourceFormatYAML},
 	}
-	var identity string
+	_, expectedSource, err := domain.MapSourcePath(
+		"secrets",
+		"/acme/payments",
+		"secrets/production/database.sops.json",
+	)
+	require.NoError(t, err)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			name, source, err := domain.MapSourcePath("secrets", "/acme/payments", test.path)
 			require.NoError(t, err)
 			assert.Equal(t, "/acme/payments/production/database", name.Value())
@@ -32,11 +38,8 @@ func TestMapSourcePath(t *testing.T) {
 			format, supported := domain.SourceFormatFromPath(test.path)
 			assert.True(t, supported)
 			assert.Equal(t, test.wantFormat, format)
-			if test.wantFormat == domain.SourceFormatJSON {
-				identity = source.Value()
-				return
-			}
-			assert.Equal(t, identity, source.Value(), "encoding-only changes must preserve source ownership")
+			assert.Equal(t, expectedSource.Value(), source.Value(),
+				"encoding-only changes must preserve source ownership")
 		})
 	}
 }

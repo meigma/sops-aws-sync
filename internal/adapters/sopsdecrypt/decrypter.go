@@ -17,6 +17,8 @@ import (
 	"github.com/meigma/sops-aws-sync/internal/domain"
 )
 
+const yamlMappingPairSize = 2
+
 // Decrypter converts encrypted SOPS JSON or YAML bytes into canonical domain values.
 type Decrypter struct {
 	maxEncryptedBytes int
@@ -130,7 +132,7 @@ func convertYAMLToJSON(plaintext []byte) ([]byte, error) {
 		return nil, errors.New("YAML plaintext is invalid")
 	}
 	var trailing yaml.Node
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("YAML plaintext must contain exactly one document")
 	}
 	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
@@ -166,6 +168,8 @@ func yamlNodeToJSONValue(node *yaml.Node) (any, error) {
 		return values, nil
 	case yaml.ScalarNode:
 		return yamlScalarToJSONValue(node)
+	case yaml.DocumentNode, yaml.AliasNode:
+		return nil, errors.New("YAML plaintext contains an unsupported value")
 	default:
 		return nil, errors.New("YAML plaintext contains an unsupported value")
 	}
@@ -173,8 +177,8 @@ func yamlNodeToJSONValue(node *yaml.Node) (any, error) {
 
 // yamlMappingToJSONValue enforces string, unique object member names.
 func yamlMappingToJSONValue(node *yaml.Node) (map[string]any, error) {
-	values := make(map[string]any, len(node.Content)/2)
-	for index := 0; index < len(node.Content); index += 2 {
+	values := make(map[string]any, len(node.Content)/yamlMappingPairSize)
+	for index := 0; index < len(node.Content); index += yamlMappingPairSize {
 		key := node.Content[index]
 		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
 			return nil, errors.New("YAML mapping keys must be strings")
@@ -196,7 +200,7 @@ func yamlMappingToJSONValue(node *yaml.Node) (map[string]any, error) {
 func yamlScalarToJSONValue(node *yaml.Node) (any, error) {
 	switch node.ShortTag() {
 	case "!!null":
-		return nil, nil
+		return json.RawMessage("null"), nil
 	case "!!str":
 		return node.Value, nil
 	case "!!bool":
