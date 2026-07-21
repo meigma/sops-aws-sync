@@ -88,6 +88,26 @@ url = "https://dl.google.com/go/go1.26.4.darwin-arm64.tar.gz"
 checksum = "sha256:05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d"
 url = "https://dl.google.com/go/go1.26.4.darwin-amd64.tar.gz"
 
+[[tools.node]]
+version = "24.4.0"
+backend = "core:node"
+
+[tools.node."platforms.linux-arm64"]
+checksum = "sha256:637ab954900450101c9a254df9014771f5f21d5fd12fec53e4cf4f8bae7e7365"
+url = "https://nodejs.org/dist/v24.4.0/node-v24.4.0-linux-arm64.tar.gz"
+
+[tools.node."platforms.linux-x64"]
+checksum = "sha256:292c187efeb7a360dee81efb519518dea2e02cb98e4c0d1d5a0f0af62c31e4b6"
+url = "https://nodejs.org/dist/v24.4.0/node-v24.4.0-linux-x64.tar.gz"
+
+[tools.node."platforms.macos-arm64"]
+checksum = "sha256:d7db0e5017d68f4e34405f5c99ad3895481793cc6420550e582b7eedf911780f"
+url = "https://nodejs.org/dist/v24.4.0/node-v24.4.0-darwin-arm64.tar.gz"
+
+[tools.node."platforms.macos-x64"]
+checksum = "sha256:3dea0c90625c2e7be1e71c3561e1e3337d42d7b6e67dd6f3a3709ec12359bec7"
+url = "https://nodejs.org/dist/v24.4.0/node-v24.4.0-darwin-x64.tar.gz"
+
 [[tools.python]]
 version = "3.14.3"
 backend = "core:python"

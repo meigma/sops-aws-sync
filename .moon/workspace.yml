@@ -6,6 +6,7 @@ projects:
   globs: []
   sources:
     root: '.'
+    action: 'action'
     docs: 'docs'
 
   # Uncomment to auto-discover more projects as the repository grows.
