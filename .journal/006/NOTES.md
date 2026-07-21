@@ -37,3 +37,8 @@ The post-merge acceptance expectation remains exact-merged-SHA manual evidence f
 
 ## 2026-07-20 18:24 — Corrected head green
 PR #11 head `4193b661c8d0bc833af956a76137449f7b0e754b` is clean and all replacement checks passed: CI, Binary Release Dry Run, GitHub Pages, and Kusari Inspector. The PR-only Pages deployment remained expectedly skipped. Pause again for user review without merging or publishing.
+
+## 2026-07-20 18:36 — Close
+User approved [PR #11](https://github.com/meigma/sops-aws-sync/pull/11). Squash-merged the exact reviewed head `4193b661c8d0bc833af956a76137449f7b0e754b` into `master` as `b67210d287faa642f7b4e1d7e73da438b5253abb`, fast-forwarded the local `master`, and removed the integrated Worktrunk worktree and branch. The merge-SHA CI gate passed in 9m46s.
+
+No release or tag was published. Release Please failed before running because its GitHub App client ID/private key are absent; Pages failed after a successful docs build because the repository has no GitHub Actions Pages site. Desired protection remains blocked by the private-repository plan. The manual exact-release AWS lifecycle functional test is also outstanding and must remain manual unless the user explicitly revises that decision. See `SUMMARY.md` for the complete postmortem and handoff.

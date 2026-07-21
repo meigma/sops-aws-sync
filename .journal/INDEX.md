@@ -7,4 +7,4 @@
 | 003 | 2026-07-20 | Phase 2 durable AWS vertical slice | complete | Landed the durable create/update reconciliation slice with full local, hosted, and live AWS sandbox verification. |
 | 004 | 2026-07-20 | Phase 3 complete CLI reconciliation | complete | Landed the complete lifecycle-safe Go CLI reconciliation slice with local, hosted, and genuine AWS verification. |
 | 005 | 2026-07-20 | Phase 4 GitHub Action wrapper | complete | Landed the verified Node 24 GitHub Action adapter with safe CLI execution, provenance enforcement, and redacted workflow results. |
-| 006 | 2026-07-20 | Phase 5 hardening and release readiness | in-progress | Review the authoritative V1 artifacts and execute Phase 5 hardening, documentation, publication, and acceptance work. |
+| 006 | 2026-07-20 | Phase 5 hardening and release readiness | complete | Merged Phase 5 hardening, documentation, and release rehearsal; publication, repository configuration, and manual AWS acceptance remain open. |
