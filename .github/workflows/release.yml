@@ -46,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
         run: |
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
               exit 0
             fi
