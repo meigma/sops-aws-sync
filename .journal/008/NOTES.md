@@ -92,3 +92,22 @@ verification: moon docs:build (mkdocs --strict) and moon root:check both pass.
 Opened PR #14 (docs: replace operator documentation with Diátaxis structure)
 from branch docs/diataxis-operator-docs; awaiting CI, then squash merge per the
 user's full-autonomy grant.
+
+## 2026-07-21 10:45 — Docs merged and live
+Mid-execution, master gained PR #13 (feat: support YAML SOPS documents,
+f602168), which conflicted with the docs branch and invalidated its JSON-only
+claims. Rebased onto master (kept deletions of the legacy pages, kept the new
+index; README/mkdocs merges were clean) and ran a third workflow
+(wf_28c6e0eb-16d, 11 agents): one analyst extracted 31 verified fact deltas
+from #13, nine updaters revised the affected docs (three suffixes, YAML
+plaintext contract, suffix-stripped name mapping, logical source identity
+preserving ownership across encoding-only changes), and a recheck pass fixed
+three residual JSON-only phrasings. A local root:lint failure turned out to be
+a stale golangci-lint cache replaying the deleted feat-yaml-sops-support
+worktree; `golangci-lint cache clean` cleared it and the full gate passed.
+PR #14 merged as squash commit 38549eb; CI, Binary Release Dry Run, Pages, and
+Kusari all green pre- and post-merge. Release Please and Pages now succeed on
+master (their session-006 configuration gaps have evidently been fixed).
+Verified the live site serves the new set at meigma.github.io/sops-aws-sync.
+Worktree docs/diataxis-operator-docs removed. Execution of the approved design
+is complete.
