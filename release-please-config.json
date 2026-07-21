@@ -10,7 +10,25 @@
   "packages": {
     ".": {
       "package-name": "sops-aws-sync",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "generic", "path": "action.yml" },
+        {
+          "type": "json",
+          "path": "action/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "action/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "action/package-lock.json",
+          "jsonpath": "$['packages'][''].version"
+        }
+      ]
     }
   },
   "changelog-sections": [

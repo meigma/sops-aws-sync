@@ -36,6 +36,9 @@ class Reader implements InputReader {
     if (name === 'github-token') {
       return this.values[name] ?? 'workflow-token'
     }
+    if (name === 'cli-version') {
+      return this.values[name] ?? '0.1.1'
+    }
     return this.values[name] ?? ''
   }
 
@@ -52,6 +55,15 @@ describe('Action input and argv contract', () => {
     )?.groups?.block
 
     expect(tokenInput).toContain('default: ${{ github.token }}')
+  })
+
+  it('couples the metadata default to the exact paired CLI release', () => {
+    const metadata = readFileSync(path.resolve('..', 'action.yml'), 'utf8')
+    const versionInput = metadata.match(
+      / {2}cli-version:\n(?<block>(?: {4}.*\n)+)/
+    )?.groups?.block
+
+    expect(versionInput).toContain('default: 0.1.1 # x-release-please-version')
   })
 
   it('parses typed defaults and constructs the exact minimum argv', () => {

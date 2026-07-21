@@ -30,6 +30,9 @@ class IO implements ActionIO {
     if (name === 'github-token') {
       return this.inputs.get(name) ?? 'workflow-token'
     }
+    if (name === 'cli-version') {
+      return this.inputs.get(name) ?? '0.1.1'
+    }
     return this.inputs.get(name) ?? ''
   }
 

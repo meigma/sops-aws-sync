@@ -46,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
         run: |
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
               exit 0
             fi
@@ -74,6 +74,16 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve-release.outputs.tag }}
         run: git checkout --detach "$RELEASE_TAG"
 
+      - name: Verify paired Action release version
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(jq -r '.["."]' .release-please-manifest.json)" = "$RELEASE_VERSION"
+          test "$(jq -r '.version' action/package.json)" = "$RELEASE_VERSION"
+          test "$(grep -c 'x-release-please-version' action.yml)" = 1
+          grep -Fqx "    default: ${RELEASE_VERSION} # x-release-please-version" action.yml
+
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -84,10 +94,10 @@ jobs:
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Build binary assets
-        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: v2.17.0
           args: release --clean --skip=publish
         env:
           GITHUB_TOKEN: ${{ github.token }}

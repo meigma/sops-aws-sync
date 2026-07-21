@@ -1,38 +1,125 @@
 # sops-aws-sync
 
-`sops-aws-sync` reconciles SOPS-encrypted JSON documents from an exact Git commit with an explicitly owned namespace in AWS Secrets Manager.
+`sops-aws-sync` reconciles SOPS-encrypted JSON documents from one exact Git
+commit with an explicitly owned namespace in AWS Secrets Manager. The Go CLI
+plans and applies create, update, restore, and recovery-window deletion
+operations; the Node 24 GitHub Action installs and verifies the paired CLI
+release before invoking it without a shell.
 
-Phase 2 provides the first durable Go CLI vertical slice: exact-commit reads, in-process SOPS decryption, strict JSON canonicalization, direct desired-name observation, create, update, no-op, and direct post-apply verification. Scope-wide discovery, restore, and scheduled deletion are intentionally deferred to the next delivery phase.
+## Installation
+
+Immutable releases contain Linux and macOS binaries for amd64 and arm64,
+`checksums.txt`, per-binary SBOMs, and GitHub provenance attestations. See
+[release verification](https://meigma.github.io/sops-aws-sync/release-verification/)
+before executing a downloaded binary.
+
+To build from source with the repository toolchain:
+
+```sh
+mise install
+moon run root:build
+./bin/sops-aws-sync version
+```
+
+## CLI usage
+
+Desired state comes from committed `.sops.json` blobs under `--source-root`.
+The working tree and Git index are never reconciled.
+
+```sh
+sops-aws-sync plan \
+  --repository . \
+  --revision HEAD \
+  --repository-id meigma/example \
+  --source-root secrets \
+  --secret-prefix /example/production \
+  --aws-region us-west-2
+
+sops-aws-sync sync \
+  --repository . \
+  --revision HEAD \
+  --repository-id meigma/example \
+  --source-root secrets \
+  --secret-prefix /example/production \
+  --aws-region us-west-2
+```
+
+Run `sops-aws-sync plan --help` or `sops-aws-sync sync --help` for the complete
+typed interface. Flags override `SOPS_AWS_SYNC_*` environment variables, which
+override an explicitly selected YAML configuration file, which overrides
+defaults.
+
+## GitHub Action
+
+Authenticate to AWS before invoking the Action. Privileged synchronization
+must run only from trusted code and must serialize writers for each ownership
+scope.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+  attestations: read
+
+concurrency:
+  group: sops-aws-sync-production
+  cancel-in-progress: false
+
+steps:
+  - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    with:
+      fetch-depth: 0
+      persist-credentials: false
+
+  - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+    with:
+      role-to-assume: ${{ secrets.SOPS_AWS_SYNC_ROLE_ARN }}
+      aws-region: us-west-2
+
+  - uses: meigma/sops-aws-sync@<full-release-commit-sha> # v0.1.1
+    with:
+      mode: sync
+      source-root: secrets
+      secret-prefix: /example/production
+      aws-region: us-west-2
+```
+
+Replace the placeholder with the full commit behind the exact release tag. The
+optional `github-token` input defaults to `${{ github.token }}` because current
+GitHub CLI attestation verification requires authentication. A private
+cross-repository consumer must provide a token scoped to read this repository's
+contents and attestations.
+
+## Safety model
+
+- Desired state is fully read, decrypted, validated, and canonicalized before
+  AWS mutation begins.
+- Same-name secrets outside the exact reserved ownership tags fail closed.
+- Deletions use a 7–30 day recovery window and always run after restore, create,
+  and update operations. Force deletion is unavailable.
+- Default logs and reports omit secret values, paths, secret names, provider
+  identifiers, credentials, tokens, and raw service errors.
+- AWS authentication comes from the standard AWS SDK chain; credentials are not
+  Action inputs or application configuration.
+- A successful sync means the fully paginated observed scope plus every desired
+  and affected name re-plans to zero operations and zero conflicts. It is not a
+  globally strongly consistent AWS snapshot.
+
+## Documentation
+
+The [operator documentation](https://meigma.github.io/sops-aws-sync/) covers
+configuration, Action trust, AWS/KMS/IAM requirements, interruption and
+consistency behavior, logging, recovery, and release verification.
 
 ## Development
 
-The repository uses mise for pinned tools and Moon as the task front door.
+The repository uses mise for its locked toolchain and Moon as the task front
+door.
 
 ```sh
 mise install
 moon run root:check
 ```
 
-Build or inspect the CLI directly:
-
-```sh
-moon run root:build
-go run ./cmd/sops-aws-sync version
-go run ./cmd/sops-aws-sync plan --help
-go run ./cmd/sops-aws-sync sync --help
-```
-
-## Safety model
-
-- Desired state always comes from committed Git blobs, never the working tree.
-- Plaintext must be one strict top-level JSON object and is stored as RFC 8785 canonical JSON.
-- Same-name secrets outside the exact reserved ownership tags fail closed.
-- Default logs and reports omit secret values, paths, secret names, provider identifiers, and raw service errors.
-- AWS authentication comes only from the standard AWS SDK credential and Region chain.
-- Phase 2 mutates only `create` and `update`; unsupported lifecycle states remain non-mutating.
-
-The CLI configuration contract is available through `plan --help` and `sync --help`. Flags override `SOPS_AWS_SYNC_*` environment variables, which override an optional explicit YAML configuration file, which override defaults.
-
-## Release shape
-
-The project is binary-only. GoReleaser builds Linux and macOS binaries for amd64 and arm64, plus checksums and SBOMs. Releases use the isolated `.github/workflows/attest.yml` workflow for GitHub artifact provenance. No container image is published.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution workflow and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting.

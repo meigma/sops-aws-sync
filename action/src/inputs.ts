@@ -11,8 +11,6 @@ import {
   type ActionMode
 } from './types.js'
 
-const compatibleCliVersion = '0.1.1'
-
 /** InputReader is the narrow Actions input and masking boundary. */
 export interface InputReader {
   /** getInput reads one Action input without logging it. */
@@ -128,9 +126,7 @@ export function readInputs(
           ),
     allowEmpty: booleanInput(reader, 'allow-empty'),
     showResourceNames: booleanInput(reader, 'show-resource-names'),
-    cliVersion: ExactVersion.parse(
-      input(reader, 'cli-version', compatibleCliVersion)
-    ),
+    cliVersion: ExactVersion.parse(input(reader, 'cli-version')),
     githubToken: token,
     workspace: AbsolutePath.parse(workspace, 'GITHUB_WORKSPACE'),
     runnerTemp: AbsolutePath.parse(runnerTemp, 'RUNNER_TEMP'),
