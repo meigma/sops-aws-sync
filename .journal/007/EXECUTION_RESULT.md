@@ -93,3 +93,34 @@ verbatim.
 
 The failed GitHub Actions run and exact-SHA rehearsal remain as non-secret audit
 evidence.
+
+## Resume attempt on 2026-07-20
+
+PR #12 fixed the draft-release handoff without weakening the release gates. It
+passed hosted checks on exact head
+`e3862c88c10824797af7b56329f565cd3684657a` and squash-merged as
+`0894dfe568f9a1cb6df616d2cfb21260a4b7061f`.
+
+The real `v0.1.1` release run then confirmed the fix:
+<https://github.com/meigma/sops-aws-sync/actions/runs/29796898446>.
+
+- draft resolution passed in two seconds;
+- all four binaries and four SBOMs were built, validated, and uploaded with
+  `checksums.txt`;
+- the host binary smoke test passed; and
+- the isolated attestation job downloaded the exact checksum artifact.
+
+GitHub rejected the final provenance write because artifact attestations are
+not available for this private repository on the `meigma` organization's
+current plan. GitHub instructed the operator to upgrade the billing plan or
+make the repository public. The release cannot be published and the Action
+cannot verify its binary without that attestation.
+
+Current retained state is intentionally non-public and credential-free:
+
+- `v0.1.1` is an exact-SHA draft prerelease with nine assets;
+- the exact annotated tag remains at the merged fix SHA;
+- producer private Action access is `none`; and
+- no consumer repository, narrow producer token, or AWS sandbox exists.
+
+Scenarios A–E remain blocked. The provenance requirement must not be bypassed.
