@@ -20,3 +20,6 @@ Addressed human review finding P1 on PR #10. Reproduced current `gh attestation 
 
 ## 2026-07-20 17:14 — Review fix hosted verification
 Hosted CI, GitHub Pages, and Kusari Inspector passed on exact PR head `bce41704d8cdfe6e0f78c30cfa6545ae6bc7ee93`; release dry-run and Pages deployment skipped as expected. PR #10 is mergeable with clean merge state and remains paused for human review.
+
+## 2026-07-20 17:18 — Close
+The user approved PR #10, which was squash-merged into `master` as `8e9db4cff42ab24eb0b04873fb69d95ac269286b`. The main checkout was fast-forwarded to that exact commit, and the integrated `phase4/typescript-action` Worktrunk worktree plus local and remote feature branches were removed. Phase 4 is complete; `.journal/005/SUMMARY.md` contains the cold-start handoff, and Phase 5 remains the next planned slice.

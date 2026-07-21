@@ -6,4 +6,4 @@
 | 002 | 2026-07-20 | Phase 1 committed-source proof | complete | Proved the committed SOPS source-to-domain path and closed accepted draft PR #7 unmerged; Phase 2 is next. |
 | 003 | 2026-07-20 | Phase 2 durable AWS vertical slice | complete | Landed the durable create/update reconciliation slice with full local, hosted, and live AWS sandbox verification. |
 | 004 | 2026-07-20 | Phase 3 complete CLI reconciliation | complete | Landed the complete lifecycle-safe Go CLI reconciliation slice with local, hosted, and genuine AWS verification. |
-| 005 | 2026-07-20 | Phase 4 GitHub Action wrapper | in-progress | Review the authoritative V1 artifacts and implement the thin Node 24 TypeScript GitHub Action around the completed Go CLI. |
+| 005 | 2026-07-20 | Phase 4 GitHub Action wrapper | complete | Landed the verified Node 24 GitHub Action adapter with safe CLI execution, provenance enforcement, and redacted workflow results. |
