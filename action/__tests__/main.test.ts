@@ -27,6 +27,9 @@ class IO implements ActionIO {
   public readonly summaries: ActionReport[] = []
 
   public getInput(name: string): string {
+    if (name === 'github-token') {
+      return this.inputs.get(name) ?? 'workflow-token'
+    }
     return this.inputs.get(name) ?? ''
   }
 

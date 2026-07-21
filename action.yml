@@ -55,8 +55,9 @@ inputs:
     description: Optional exact semantic CLI version without a leading v.
     required: false
   github-token:
-    description: Optional token for private release and attestation API access.
+    description: GitHub token for authenticated release and attestation API access; defaults to the workflow token.
     required: false
+    default: ${{ github.token }}
 
 outputs:
   status:

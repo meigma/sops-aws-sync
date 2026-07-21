@@ -47,7 +47,7 @@ export interface ActionConfig {
   readonly allowEmpty: boolean
   readonly showResourceNames: boolean
   readonly cliVersion: ExactVersion
-  readonly githubToken?: string
+  readonly githubToken: string
   readonly workspace: AbsolutePath
   readonly runnerTemp: AbsolutePath
   readonly runnerOS: string
@@ -66,9 +66,12 @@ export function readInputs(
   }
 
   const token = input(reader, 'github-token')
-  if (token.length > 0) {
-    reader.setSecret(token)
+  if (token.length === 0) {
+    throw new ActionError(
+      'Input github-token did not receive a workflow token for GitHub authentication'
+    )
   }
+  reader.setSecret(token)
 
   const workspace = requiredEnvironment(
     environment.GITHUB_WORKSPACE,
@@ -128,7 +131,7 @@ export function readInputs(
     cliVersion: ExactVersion.parse(
       input(reader, 'cli-version', compatibleCliVersion)
     ),
-    githubToken: token.length === 0 ? undefined : token,
+    githubToken: token,
     workspace: AbsolutePath.parse(workspace, 'GITHUB_WORKSPACE'),
     runnerTemp: AbsolutePath.parse(runnerTemp, 'RUNNER_TEMP'),
     runnerOS: requiredEnvironment(environment.RUNNER_OS, 'RUNNER_OS'),

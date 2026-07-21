@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+
 import { describe, expect, it } from '@jest/globals'
 
 import { buildArguments } from '../src/command.js'
@@ -30,6 +33,9 @@ class Reader implements InputReader {
   ) {}
 
   public getInput(name: string): string {
+    if (name === 'github-token') {
+      return this.values[name] ?? 'workflow-token'
+    }
     return this.values[name] ?? ''
   }
 
@@ -39,15 +45,24 @@ class Reader implements InputReader {
 }
 
 describe('Action input and argv contract', () => {
+  it('gives omitted github-token input the workflow token metadata default', () => {
+    const metadata = readFileSync(path.resolve('..', 'action.yml'), 'utf8')
+    const tokenInput = metadata.match(
+      / {2}github-token:\n(?<block>(?: {4}.*\n)+)/
+    )?.groups?.block
+
+    expect(tokenInput).toContain('default: ${{ github.token }}')
+  })
+
   it('parses typed defaults and constructs the exact minimum argv', () => {
-    const config = readInputs(
-      new Reader({ 'secret-prefix': '/acme/payments' }),
-      environment
-    )
+    const reader = new Reader({ 'secret-prefix': '/acme/payments' })
+    const config = readInputs(reader, environment)
     const reportPath = AbsolutePath.parse('/runner/temp/report.json', 'report')
 
     expect(config.mode).toBe('plan')
     expect(config.cliVersion.value).toBe('0.1.1')
+    expect(config.githubToken).toBe('workflow-token')
+    expect(reader.masked).toEqual(['workflow-token'])
     expect(buildArguments(config, reportPath)).toEqual([
       'plan',
       '--repository',
@@ -154,6 +169,18 @@ describe('Action input and argv contract', () => {
         GITHUB_SHA: undefined
       })
     ).toThrow('Runner environment GITHUB_SHA is required')
+  })
+
+  it('fails before installation when the metadata workflow-token default is absent', () => {
+    expect(() =>
+      readInputs(
+        new Reader({
+          'github-token': '',
+          'secret-prefix': '/scope'
+        }),
+        environment
+      )
+    ).toThrow('did not receive a workflow token')
   })
 
   it('constructs strong value types without partial parsing', () => {

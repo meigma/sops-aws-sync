@@ -35,6 +35,7 @@ class Reader implements InputReader {
   public getInput(name: string): string {
     if (name === 'secret-prefix') return '/test/scope'
     if (name === 'cli-version') return '1.2.3'
+    if (name === 'github-token') return 'workflow-token'
     return ''
   }
 
@@ -92,14 +93,17 @@ class Cache implements CacheProvider {
 
 class Provenance implements ProvenanceVerifier {
   public readonly calls: string[] = []
+  public readonly tokens: string[] = []
 
   public async verify(
     binary: AbsolutePath,
     _version: ExactVersion,
     _commit: string,
-    digest: string
+    digest: string,
+    token: string | undefined
   ): Promise<void> {
     this.calls.push(`${binary.value}:${digest}`)
+    if (token !== undefined) this.tokens.push(token)
   }
 }
 
@@ -170,6 +174,7 @@ describe('verified CLI installer', () => {
       'sops-aws-sync_1.2.3_linux_amd64'
     ])
     expect(provenance.calls).toHaveLength(1)
+    expect(provenance.tokens).toEqual(['workflow-token'])
   })
 
   it('re-verifies a cache hit and never falls back to a download', async () => {

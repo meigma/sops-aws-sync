@@ -600,7 +600,7 @@ function apiHeaders(
   return Object.freeze(headers)
 }
 
-/** tokenEnvironment exposes the optional token only to GitHub CLI verification. */
+/** tokenEnvironment exposes the masked workflow token only to GitHub CLI verification. */
 function tokenEnvironment(
   token: string | undefined,
   configDirectory: string
