@@ -1,8 +1,8 @@
 # sops-aws-sync
 
-`sops-aws-sync` reconciles SOPS-encrypted JSON documents from one exact Git
-commit with an explicitly owned namespace in AWS Secrets Manager. The Go CLI
-plans and applies create, update, restore, and recovery-window deletion
+`sops-aws-sync` reconciles SOPS-encrypted JSON or YAML documents from one exact
+Git commit with an explicitly owned namespace in AWS Secrets Manager. The Go
+CLI plans and applies create, update, restore, and recovery-window deletion
 operations; the Node 24 GitHub Action installs and verifies the paired CLI
 release before invoking it without a shell.
 
@@ -23,8 +23,9 @@ moon run root:build
 
 ## CLI usage
 
-Desired state comes from committed `.sops.json` blobs under `--source-root`.
-The working tree and Git index are never reconciled.
+Desired state comes from committed `.sops.json`, `.sops.yaml`, and `.sops.yml`
+blobs under `--source-root`. The working tree and Git index are never
+reconciled.
 
 ```sh
 sops-aws-sync plan \
@@ -43,6 +44,18 @@ sops-aws-sync sync \
   --secret-prefix /example/production \
   --aws-region us-west-2
 ```
+
+A YAML source contains one top-level mapping with JSON-compatible values:
+
+```yaml
+database:
+  host: db.internal
+  port: 5432
+```
+
+Encrypt it with SOPS before committing it. JSON and YAML inputs are both stored
+as canonical JSON, so an encoding-only change does not create value drift or
+change source ownership.
 
 Run `sops-aws-sync plan --help` or `sops-aws-sync sync --help` for the complete
 typed interface. Flags override `SOPS_AWS_SYNC_*` environment variables, which

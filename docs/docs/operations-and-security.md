@@ -28,10 +28,15 @@ Secrets Manager rotation and replication configuration.
 ## Ownership and destructive operations
 
 A secret is managed only when its reserved `managed-by` and `scope` tags match
-exactly and its `source` tag is a valid source-path digest. A desired same-name
-secret must also have the expected source identity. Foreign, malformed,
+exactly and its `source` tag is a valid logical-source digest. A desired
+same-name secret must also have the expected source identity. Foreign, malformed,
 rotation-managed, service-owned, replicated, or ambiguous staging state is a
 conflict and prevents mutation for that plan.
+
+The logical identity preserves the legacy `.sops.json` digest when the same
+path stem uses `.sops.yaml` or `.sops.yml`. Changing only the encoding therefore
+does not create an ownership conflict; changing the directory or stem still
+does.
 
 Removed managed sources are scheduled for deletion after restore, create, and
 update operations. The recovery window defaults to 30 days and can be set from
@@ -77,7 +82,7 @@ failure go to stderr. Machine results go only to `--report-file`.
 
 Default and debug logs may contain operation kinds, counts, durations, safe AWS
 error codes, request IDs, and run-local resource ordinals. They do not contain
-plaintext or ciphertext documents, JSON keys, credentials, tokens, KMS
+plaintext or ciphertext documents, document keys, credentials, tokens, KMS
 identifiers, provider identifiers, raw SDK/SOPS errors, secret names, or source
 paths. `--show-resource-names` changes only identifier visibility; it never
 permits secret values.

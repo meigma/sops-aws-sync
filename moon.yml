@@ -4,7 +4,7 @@ stack: 'backend'
 
 project:
   title: 'sops-aws-sync'
-  description: 'Reconcile committed SOPS JSON with AWS Secrets Manager.'
+  description: 'Reconcile committed SOPS documents with AWS Secrets Manager.'
   owner: 'meigma'
   maintainers:
     - 'meigma'

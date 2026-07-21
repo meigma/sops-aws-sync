@@ -5,7 +5,7 @@ signer_workflow = "meigma/sops-aws-sync/.github/workflows/attest.yml"
 
 [[packages]]
 name = "sops-aws-sync"
-description = "Reconcile committed SOPS JSON with AWS Secrets Manager."
+description = "Reconcile committed SOPS documents with AWS Secrets Manager."
 tag_pattern = "v${version}"
 
 [[packages.assets]]

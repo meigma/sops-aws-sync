@@ -1,5 +1,5 @@
 name: sops-aws-sync
-description: Reconcile committed SOPS JSON with AWS Secrets Manager using a verified CLI release.
+description: Reconcile committed SOPS documents with AWS Secrets Manager using a verified CLI release.
 author: meigma
 
 branding:
@@ -16,7 +16,7 @@ inputs:
     required: false
     default: 'false'
   source-root:
-    description: Repository-relative directory containing .sops.json files.
+    description: Repository-relative directory containing .sops.json, .sops.yaml, or .sops.yml files.
     required: false
     default: secrets
   secret-prefix:

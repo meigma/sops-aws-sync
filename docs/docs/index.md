@@ -4,9 +4,10 @@ title: sops-aws-sync
 
 # sops-aws-sync
 
-`sops-aws-sync` reconciles committed SOPS-encrypted JSON documents with an
-explicitly owned AWS Secrets Manager namespace. One selected `.sops.json` file
-maps deterministically to one canonical `SecretString`.
+`sops-aws-sync` reconciles committed SOPS-encrypted JSON or YAML documents with
+an explicitly owned AWS Secrets Manager namespace. One selected `.sops.json`,
+`.sops.yaml`, or `.sops.yml` file maps deterministically to one canonical JSON
+`SecretString`.
 
 The Go CLI owns Git reads, in-process SOPS decryption, AWS observation,
 planning, mutation, and verification. The Node 24 Action is a thin adapter that
@@ -26,9 +27,11 @@ Start with:
 ## Reconciliation boundary
 
 Desired state is the tree of one resolved Git commit, never the working tree,
-index, or untracked files. Selected documents must be regular `.sops.json`
-blobs. Every document must decrypt with a valid SOPS MAC and become exactly one
-top-level JSON object in the RFC 8785 canonicalization profile.
+index, or untracked files. Selected documents must be regular `.sops.json`,
+`.sops.yaml`, or `.sops.yml` blobs. Every document must decrypt with a valid
+SOPS MAC and become exactly one top-level object in the RFC 8785
+canonicalization profile. YAML inputs must contain one mapping with
+JSON-compatible values.
 
 The tool creates missing owned secrets, updates changed values, restores
 reintroduced secrets, and schedules removed secrets for deletion with a

@@ -1,5 +1,5 @@
 site_name: sops-aws-sync
-site_description: Reconcile committed SOPS JSON with AWS Secrets Manager
+site_description: Reconcile committed SOPS documents with AWS Secrets Manager
 site_url: https://meigma.github.io/sops-aws-sync/
 repo_name: meigma/sops-aws-sync
 repo_url: https://github.com/meigma/sops-aws-sync

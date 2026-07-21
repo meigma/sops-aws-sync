@@ -25,7 +25,7 @@ AWS SDK's standard chain and are not copied into tool configuration.
 | `--repository` | `.` | Local Git repository to open. |
 | `--revision` | `HEAD` | Commit-ish resolved by go-git. |
 | `--repository-id` | required | Stable ownership identity, normally `owner/repo`. |
-| `--source-root` | `secrets` | Repository-relative directory containing `.sops.json` files. |
+| `--source-root` | `secrets` | Directory containing `.sops.json`, `.sops.yaml`, or `.sops.yml` files. |
 | `--secret-prefix` | required | Secrets Manager name prefix and ownership boundary. |
 | `--max-encrypted-bytes` | `8MiB` | Per-file encrypted input limit. |
 | `--allow-empty` | `false` | Authorize an empty desired set to add scheduled deletions. |
