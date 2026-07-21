@@ -111,3 +111,13 @@ master (their session-006 configuration gaps have evidently been fixed).
 Verified the live site serves the new set at meigma.github.io/sops-aws-sync.
 Worktree docs/diataxis-operator-docs removed. Execution of the approved design
 is complete.
+
+## 2026-07-21 13:58 — Close
+Session closed. PR #14 (docs: replace operator documentation with Diátaxis
+structure) was squash-merged as 38549eb with all checks green; local master is
+fast-forwarded and the implementation worktree is removed. SUMMARY.md written;
+INDEX.md row set to complete; TECH_NOTES.md updated with the docs structure
+authority, the docs-ahead-of-release gap, the golangci-lint stale-cache and
+conflicting-PR/no-checks lessons, and the resolved Release Please/Pages state.
+Hand-off: docs are live at meigma.github.io/sops-aws-sync; the next release
+closes the YAML docs-vs-binary gap.
