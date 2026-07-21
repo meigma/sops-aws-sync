@@ -108,7 +108,7 @@ Action inputs listed there. The inputs below have no shared CLI flag.
 |-------|---------|-------------------|
 | `mode` | `plan` | `plan` or `sync`; selects the subcommand |
 | `fail-on-drift` | `false` | boolean; valid only when `mode: plan`; rejected in sync mode |
-| `cli-version` | release-managed exact version (currently `0.1.1`) | exact semantic version without a leading `v` |
+| `cli-version` | release-managed exact version | exact semantic version without a leading `v` |
 | `github-token` | `${{ github.token }}` | string; must be non-empty; masked; authenticates release download and attestation verification only |
 
 ### Forwarded and fixed arguments

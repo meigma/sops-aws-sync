@@ -37,8 +37,10 @@ const compatibleVersion =
   /^ {4}default: ([^\s#]+) # x-release-please-version$/m.exec(
     actionMetadata
   )?.[1]
+const repositoryVersion =
+  releaseManifest['.'] ?? releaseConfig['initial-version']
 if (
-  packageMetadata.version !== releaseManifest['.'] ||
+  packageMetadata.version !== repositoryVersion ||
   compatibleVersion !== packageMetadata.version
 ) {
   throw new Error(

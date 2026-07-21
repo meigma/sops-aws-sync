@@ -100,7 +100,7 @@ Reference the Action by the full commit SHA behind an exact release tag, with a
 version comment. Do not use `@v1`, `@master`, or any floating ref:
 
 ```yaml
-- uses: meigma/sops-aws-sync@<full-release-commit-sha> # v0.1.1
+- uses: meigma/sops-aws-sync@<full-release-commit-sha> # vX.Y.Z
 ```
 
 Leave `cli-version` unset. Each pinned release ref carries the exact CLI version
@@ -170,7 +170,7 @@ jobs:
           aws-region: us-west-2
 
       - id: plan
-        uses: meigma/sops-aws-sync@<full-release-commit-sha> # v0.1.1
+        uses: meigma/sops-aws-sync@<full-release-commit-sha> # vX.Y.Z
         with:
           mode: plan
           fail-on-drift: true
@@ -227,7 +227,7 @@ jobs:
           aws-region: us-west-2
 
       - id: sync
-        uses: meigma/sops-aws-sync@<full-release-commit-sha> # v0.1.1
+        uses: meigma/sops-aws-sync@<full-release-commit-sha> # vX.Y.Z
         with:
           mode: sync
           source-root: secrets
@@ -256,7 +256,7 @@ repository's contents and attestations:
 
 ```yaml
       - id: sync
-        uses: meigma/sops-aws-sync@<full-release-commit-sha> # v0.1.1
+        uses: meigma/sops-aws-sync@<full-release-commit-sha> # vX.Y.Z
         with:
           mode: sync
           secret-prefix: /example/production

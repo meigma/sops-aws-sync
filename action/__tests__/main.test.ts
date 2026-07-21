@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,6 +17,9 @@ import type { ActionReport } from '../src/report.js'
 import { AbsolutePath } from '../src/types.js'
 
 const temporaryDirectories: string[] = []
+const releaseVersion = JSON.parse(
+  readFileSync(path.resolve('package.json'), 'utf8')
+).version as string
 
 class IO implements ActionIO {
   public readonly inputs = new Map<string, string>()
@@ -31,7 +35,7 @@ class IO implements ActionIO {
       return this.inputs.get(name) ?? 'workflow-token'
     }
     if (name === 'cli-version') {
-      return this.inputs.get(name) ?? '0.1.1'
+      return this.inputs.get(name) ?? releaseVersion
     }
     return this.inputs.get(name) ?? ''
   }
