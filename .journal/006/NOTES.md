@@ -34,3 +34,6 @@ PR #11 is open, mergeable, and clean. Stop here for user review. Do not squash m
 User clarified that the AWS sandbox exercise is a manual functional test, not permanent repository automation. This supersedes the earlier notes describing a protected serialized acceptance workflow as part of the pre-merge implementation. Removed `.github/workflows/aws-sandbox-acceptance.yml` and both committed `.github/sandbox/` SOPS fixtures in `4193b66` (`test: keep AWS acceptance manual`), updated PR #11's description, and reran the complete 25-task local gate successfully.
 
 The post-merge acceptance expectation remains exact-merged-SHA manual evidence for create, update, no-op, restore, scheduled deletion, safe logs, and observed-snapshot convergence using caller-owned AWS authentication. Do not encode that exercise as a reusable or dispatchable GitHub Actions workflow unless the user explicitly revises this decision.
+
+## 2026-07-20 18:24 — Corrected head green
+PR #11 head `4193b661c8d0bc833af956a76137449f7b0e754b` is clean and all replacement checks passed: CI, Binary Release Dry Run, GitHub Pages, and Kusari Inspector. The PR-only Pages deployment remained expectedly skipped. Pause again for user review without merging or publishing.
