@@ -4,7 +4,10 @@ Use a temporary private GitHub repository and a disposable AWS sandbox to test
 the released GitHub Action exactly as an operator would use it. This is a
 release-blocking acceptance test, not a repository test suite.
 
-Execution status: **not run**
+Execution status: **blocked at the release gate on 2026-07-20**. The exact-SHA
+release rehearsal passed, but the real Release workflow could not discover its
+existing draft release, so it produced no assets or attestations. Scenarios A–E
+were not run. See `EXECUTION_RESULT.md` for evidence and cleanup status.
 
 ## Release decision
 
