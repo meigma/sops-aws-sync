@@ -1,6 +1,6 @@
 ---
 id: 007
-title: New work awaiting goal
+title: Manual E2E release acceptance
 started: 2026-07-20
 ---
 
@@ -41,3 +41,10 @@ Merge: PR #12 passed CI, Release Dry Run, GitHub Pages build, and Kusari Inspect
 Live proof: Recreated the draft `v0.1.1` release and exact annotated tag. Release run https://github.com/meigma/sops-aws-sync/actions/runs/29796898446 resolved the draft in two seconds, built and smoke-tested all binaries, validated and uploaded all nine assets, and transferred `checksums.txt` into the isolated attestation job.
 External blocker: `actions/attest` then failed to persist provenance with GitHub's exact error: `Feature not available for the meigma organization. To enable this feature, please upgrade the billing plan, or make this repository public.` The producer remains private, the release remains a draft prerelease, the exact tag and nine assets are retained, private Action access remains `none`, and no AWS sandbox, consumer repository, or producer token has been created in this resumed run.
 Decision needed: Enable private-repository attestations through the organization plan, or explicitly authorize changing the producer repository's visibility. Do not publish the unattested release or bypass the Action's provenance requirement.
+
+## 2026-07-20 20:29 — Acceptance passed and cleanup complete
+Resolution: The user confirmed the producer is an OSS repository and changed it to public. The retained `v0.1.1` attestation job then passed, immutable releases were enabled, and the prerelease was published. `gh release verify` validates all nine assets and provenance at merge commit `0894dfe568f9a1cb6df616d2cfb21260a4b7061f`.
+Execution: Created temporary private consumer repository `meigma/sops-aws-sync-e2e-20260721030410` and Whizlabs AWS account `705991249149`. Scenarios A–E passed across release verification, non-mutating plans, ownership conflict, serialized repeat runs, pinned revisions, lifecycle changes, out-of-band repair, plaintext rejection and redaction, authorized empty state, and scope boundaries. See `EXECUTION_RESULT.md` for run URLs and exact evidence.
+Observation: Removing every tracked source file also removes the Git directory. The Action safely treats this as a missing source root. An intentional empty snapshot needs a tracked placeholder such as `secrets/.gitkeep` before `allow-empty` can authorize scheduled deletion.
+Cleanup: The user deleted the exact temporary consumer repository and GitHub confirms it is absent. The AWS sandbox was destroyed, a second destroy found nothing, isolated Whizlabs login state was removed, and the local clone and age key were moved to Trash. Producer `master` is clean and synchronized; the verified immutable prerelease remains intentionally published.
+Outcome: **PASS — no release blocker remains after PR #12 and the public-repository attestation rerun.** Session remains open pending an explicit close request.

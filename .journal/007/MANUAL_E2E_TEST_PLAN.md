@@ -4,10 +4,11 @@ Use a temporary private GitHub repository and a disposable AWS sandbox to test
 the released GitHub Action exactly as an operator would use it. This is a
 release-blocking acceptance test, not a repository test suite.
 
-Execution status: **blocked at the release gate on 2026-07-20**. The exact-SHA
-release rehearsal passed, but the real Release workflow could not discover its
-existing draft release, so it produced no assets or attestations. Scenarios A–E
-were not run. See `EXECUTION_RESULT.md` for evidence and cleanup status.
+Execution status: **passed on 2026-07-20 PDT / 2026-07-21 UTC after release
+remediation**. PR #12 repaired draft-release discovery, public visibility made
+GitHub provenance available, and scenarios A–E completed against immutable
+prerelease `v0.1.1`. See `EXECUTION_RESULT.md` for run URLs, findings, and
+cleanup proof.
 
 ## Release decision
 
@@ -25,9 +26,10 @@ any of these as a release blocker:
 A GitHub or Whizlabs outage is **inconclusive**, not a product failure. Preserve
 the evidence, clean up, and repeat with fresh temporary resources.
 
-## Current execution gates
+## Execution gates recorded before the run
 
-As checked on 2026-07-20:
+As checked before execution on 2026-07-20 (historical; resolved during the
+run):
 
 - `meigma/sops-aws-sync` is private and has no published release.
 - `action.yml` defaults to CLI `0.1.1`, but that metadata is not a release.
