@@ -44,3 +44,21 @@ Workflow 2 (design-diataxis-structure, run wf_110d0596-49f) launched: three
 Opus designers (mental-model-first, operator-task-first, minimalist-curator) →
 three-criterion judge panel (Diátaxis purity, operator value, economy/maturity)
 → Opus synthesizer producing the final proposal markdown.
+
+## 2026-07-20 22:45 — Workflow 2 complete; proposal delivered
+Workflow 2 (run wf_110d0596-49f) finished: three Opus designers produced
+independent structures; the judge panel ranked mental-model-first #1 on both
+Diátaxis purity and operator value, minimalist-curator #1 on economy/maturity;
+the synthesizer merged them into a 13-document structure (1 landing, 1 tutorial,
+5 how-tos, 4 explanations, 3 references) with explicit type-boundary routing
+rules, per-doc deliberate-exclusion lists, a rejected-topics list, and a defined
+README role. Key decisions: a four-explanation spine (reconciliation-model,
+ownership-and-scope, consistency-and-recovery, security-and-trust) with
+ownership-and-scope kept standalone because silent re-scoping is the top
+operator hazard; a three-reference inputs→rules→outputs triad (configuration,
+reconciliation, results); IAM folded into a how-to; the TagResource
+DESIGN-vs-adapter discrepancy resolved decisively (grant it — tags ride
+CreateSecret but AWS requires the permission). Saved as
+.journal/008/DOC_STRUCTURE_PROPOSAL.md with the grounding evidence in
+.journal/008/SYSTEM_MAP.json. Total: 14 subagents, ~1.26M subagent tokens,
+all Opus 4.8 / Sonnet 5 per the user's constraint.
