@@ -5,16 +5,16 @@ title: sops-aws-sync operator documentation
 # sops-aws-sync operator documentation
 
 sops-aws-sync is a Go command-line tool paired with a supply-chain-verified
-Node 24 GitHub Action. It reconciles the SOPS-encrypted `*.sops.json` documents
-committed at one exact Git commit into an explicitly owned namespace in AWS
-Secrets Manager, issuing create, update, restore, and scheduled-delete
-operations so that AWS matches what Git holds. `plan` is read-only and reports
-what would change; `sync` mutates and then always verifies that the scope
-converged.
+Node 24 GitHub Action. It reconciles the SOPS-encrypted `.sops.json`,
+`.sops.yaml`, and `.sops.yml` documents committed at one exact Git commit into
+an explicitly owned namespace in AWS Secrets Manager, issuing create, update,
+restore, and scheduled-delete operations so that AWS matches what Git holds.
+`plan` is read-only and reports what would change; `sync` mutates and then
+always verifies that the scope converged.
 
 The one sentence that governs everything else: the committed Git revision is
-the desired state — you change AWS by committing and pushing `*.sops.json`
-files, never by editing secrets directly. [About the reconciliation
+the desired state — you change AWS by committing and pushing those documents,
+never by editing secrets directly. [About the reconciliation
 model](explanation/reconciliation-model.md) explains why.
 
 ## Read before you run `sync`
@@ -35,7 +35,7 @@ the full explanation.
 - **One writer per scope.** AWS offers no cross-secret transaction, so
   correctness depends on exactly one active `sync` per scope. →
   [consistency and recovery](explanation/consistency-and-recovery.md)
-- **Not everything in a `.sops.json` file is secret.** SOPS encrypts values,
+- **Not everything in a source document is secret.** SOPS encrypts values,
   not keys, paths, or metadata; those are plaintext in Git. →
   [security and trust](explanation/security-and-trust.md)
 
@@ -77,8 +77,10 @@ the full explanation.
   [ownership and scope](explanation/ownership-and-scope.md)
 - **No force delete.** Every deletion is a scheduled deletion inside a recovery
   window. → [reconciliation model](explanation/reconciliation-model.md)
-- **JSON only.** It reads `*.sops.json` documents and ignores every other
-  format. → [reconciliation reference](reference/reconciliation.md)
+- **Three SOPS encodings, one stored form.** It reads `.sops.json`,
+  `.sops.yaml`, and `.sops.yml` documents, stores every one as canonical JSON,
+  and ignores every other file. →
+  [reconciliation reference](reference/reconciliation.md)
 - **Linux and macOS only**, on amd64 and arm64. →
   [configuration reference](reference/configuration.md)
 

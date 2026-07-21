@@ -19,15 +19,25 @@ defaults, and precedence are in
 Desired state is built from committed content at one resolved Git commit. The
 working tree and the index are never consulted.
 
-- Only regular Git blobs whose path ends in the literal suffix `.sops.json`,
-  located under the configured source root, are selected. Discovery is
-  recursive through the source-root subtree.
-- Paths that do not end in `.sops.json` are ignored, not errors. Other
-  encrypted extensions such as `.enc.json` and `.sops.yaml` are silently
-  skipped.
-- A selected path — one that matches the `.sops.json` suffix — whose tree entry
-  is not a regular blob (a symlink, submodule, or any other non-regular mode) is
-  a hard load error that aborts the run.
+- Only regular Git blobs whose path ends in one of three literal,
+  case-sensitive suffixes, located under the configured source root, are
+  selected. Discovery is recursive through the source-root subtree. The matched
+  suffix fixes the document's encoding, and there is no flag to override it:
+
+  | Suffix | Encoding |
+  |--------|----------|
+  | `.sops.json` | JSON |
+  | `.sops.yaml` | YAML |
+  | `.sops.yml` | YAML |
+
+  The two YAML suffixes are equivalent and carry one identical encoding
+  contract.
+- Paths that do not end in one of the three suffixes are ignored, not errors.
+  Files such as `config.yaml`, `.yml`, `README.md`, `.enc.json`, and a plain
+  `.json` that is not `.sops.json` are silently skipped.
+- A selected path — one that matches a supported suffix — whose tree entry is
+  not a regular blob (a symlink, submodule, or any other non-regular mode) is a
+  hard load error that aborts the run.
 - Each selected blob must be no larger than the `max-encrypted-bytes` limit (see
   [Configuration reference](configuration.md)). The blob size is checked before
   the blob is read.
@@ -39,14 +49,40 @@ working tree and the index are never consulted.
 After a blob is selected, it is decrypted and its plaintext must satisfy every
 condition below. Any failure aborts the run before observation or mutation.
 
+Both formats:
+
 - The SOPS document MAC is verified during decryption.
 - The decrypted plaintext is valid UTF-8.
+- The value is re-encoded to RFC 8785 (JCS) canonical JSON. A YAML plaintext is
+  first converted to intermediate JSON, then passed through the same validator
+  and canonicalizer as a JSON source, so both encodings emit byte-identical
+  canonical JSON for equivalent content.
+- The canonical value is non-empty and no larger than 65,536 bytes.
+
+JSON sources also:
+
 - The plaintext is exactly one top-level JSON object. Bare scalars, top-level
   arrays, and multiple top-level values are rejected.
 - No member name is duplicated at any nesting depth.
 - No data follows the top-level object.
-- The value is re-encoded to RFC 8785 (JCS) canonical JSON.
-- The canonical value is non-empty and no larger than 65,536 bytes.
+
+YAML sources also:
+
+- The plaintext is exactly one YAML document; a second `---` document is
+  rejected.
+- The top-level value is a mapping. Bare scalars and top-level sequences are
+  rejected.
+- Every mapping key, at any nesting depth, is a string. Non-string keys — such
+  as integer, boolean, or null keys — are rejected.
+- No mapping key is duplicated within a mapping, at any nesting depth.
+- Anchors and aliases are rejected.
+- Every scalar resolves to a JSON scalar type: null, string, boolean, integer,
+  or float. Other resolved tags — including YAML timestamps such as
+  `2026-07-21` and explicitly `!!binary` scalars — are rejected. An integer
+  outside the JSON integer profile, and a non-finite float (`.inf`, `-.inf`,
+  `.nan`), are also rejected.
+- The supported structure is one top-level mapping whose values may be nested
+  mappings with string keys, sequences, and the allowed scalars.
 
 ## Name mapping
 
@@ -54,13 +90,15 @@ The AWS secret name is derived from the source path; it is never read from the
 document or stored separately.
 
 ```
-secret name = secret-prefix + "/" + (source path − source-root − ".sops.json")
+secret name = secret-prefix + "/" + (source path − source-root − matched suffix)
 ```
 
 The secret prefix has any single trailing `/` trimmed before it is joined. The
 relative stem is the repository-relative path with the source-root prefix and
-the `.sops.json` suffix removed. Case is preserved and no character is
-substituted.
+whichever supported suffix matched (`.sops.json`, `.sops.yaml`, or `.sops.yml`)
+removed. Because all three suffixes strip to the same stem, `db.sops.json`,
+`db.sops.yaml`, and `db.sops.yml` at one location derive the same secret name.
+Case is preserved and no character is substituted. An empty stem fails mapping.
 
 Worked example, with source root `secrets` and secret prefix `/acme/payments`:
 
@@ -72,7 +110,9 @@ secrets/production/database.sops.json  →  /acme/payments/production/database
   identity, so the tool sees a delete of the old name and a create of the new
   name, never a rename.
 - Two documents in a single snapshot that map to the same name is a hard load
-  error.
+  error. This includes two files that share one stem but differ only in
+  encoding (for example `value.sops.json` and `value.sops.yml`), since both
+  derive the same name.
 - A path that would yield a character outside the name character set (below)
   fails mapping.
 
@@ -95,13 +135,19 @@ and are not configurable.
 |---------|-------|
 | `sops-aws-sync:managed-by` | The literal `sops-aws-sync`. |
 | `sops-aws-sync:scope` | Lowercase-hex SHA-256 over the label `sops-aws-sync:scope:v1`, the repository-id, the cleaned source-root, and the trailing-slash-trimmed secret-prefix, joined with NUL (`\x00`) separators. |
-| `sops-aws-sync:source` | Lowercase-hex SHA-256 of the cleaned repository-relative source path. |
+| `sops-aws-sync:source` | Lowercase-hex SHA-256 of the cleaned repository-relative source path, with any `.sops.yaml` or `.sops.yml` suffix first normalized to `.sops.json`. The hashed path includes the source-root prefix. |
 
 - A secret is owned only when both `managed-by` and `scope` match the current
   scope exactly. The `source` tag then identifies which committed path owns it.
 - The reserved tags are written only by the `CreateSecret` request. There is no
   post-create tag-repair path.
 - Non-reserved tags are neither read for decisions nor modified.
+- Changing only a document's encoding (`.sops.json` ↔ `.sops.yaml` ↔
+  `.sops.yml`) at the same location leaves both the derived name and the
+  `source` tag unchanged, so ownership is preserved and, because the two
+  encodings produce identical canonical JSON, no value drift arises. Changing
+  the stem, the directory within the root, or the source-root prefix changes
+  the source identity.
 
 The re-scoping consequences of these rules are covered in
 [About ownership, scope, and fail-closed safety](../explanation/ownership-and-scope.md).
@@ -224,8 +270,9 @@ in
 
 ## SOPS integration
 
-- Decryption is delegated to getsops with the format fixed to JSON, and the
-  document MAC is verified.
+- Decryption is delegated to getsops with the format selected per document from
+  its path suffix — JSON for `.sops.json`, YAML for `.sops.yaml` and
+  `.sops.yml` — and the document MAC is verified for either format.
 - Key backends (age, KMS, PGP, Vault) are whatever SOPS resolves from its own
   environment and each document's metadata. The tool contributes no key
   configuration and layers the stricter content contract above on top of the

@@ -22,12 +22,13 @@ those rules encode.
 
 ## Git is the desired state, and only Git
 
-The desired state is the set of committed `*.sops.json` documents at one
-exact commit. Nothing else. The working tree is never read; the staging
-index is never read; a file you have edited but not committed does not
-exist as far as the tool is concerned. This is a deliberate narrowing, and
-it is the single most important thing to hold in your head: you change AWS
-by changing Git, and only Git.
+The desired state is the set of committed SOPS documents — the files whose
+names end in `.sops.json`, `.sops.yaml`, or `.sops.yml` — at one exact
+commit. Nothing else. The working tree is never read; the staging index is
+never read; a file you have edited but not committed does not exist as far
+as the tool is concerned. This is a deliberate narrowing, and it is the
+single most important thing to hold in your head: you change AWS by changing
+Git, and only Git.
 
 The practical consequence is that a reconciliation only ever acts on
 something that has been committed. In the CI workflow the tool is built
@@ -119,8 +120,8 @@ own right and the trap operators most often fall into.
 A secret's name is not something you configure per document and it is not
 stored anywhere the tool later looks up. It is *derived*, deterministically,
 from where the file sits in the repository: the configured prefix joined to
-the document's path with the source root and the `.sops.json` suffix
-removed, with the case preserved and no characters silently rewritten. The
+the document's path with the source root and its SOPS suffix removed, with
+the case preserved and no characters silently rewritten. The
 file's location *is* its identity.
 
 This has a consequence that surprises people, and it is worth stating
@@ -129,7 +130,7 @@ plainly because it is the classic "why did my plan do that?" moment.
 !!! note "A rename is a delete plus a create"
 
     Because both the secret's name and its ownership identity are derived
-    from the source path, moving or renaming a `.sops.json` file does not
+    from the source path, moving or renaming a source document does not
     move or rename the secret. The tool sees the old path vanish from Git
     and a new path appear, and reconciles accordingly: the old secret is
     scheduled for deletion and a new one is created. There is no rename
@@ -153,12 +154,16 @@ and choosing it was deliberate. Every committed document is reduced to a
 single canonical form before comparison, so two documents that differ only
 in whitespace, key order, or number formatting collapse to the same bytes
 and converge exactly once — after which they compare equal forever and never
-churn. The flip side is the honest one: a value already living in AWS that is
-*not* byte-identical to that canonical form is rewritten, even if a human
-would call it "the same JSON." The tool has no notion of "close enough,"
-because "close enough" is where non-determinism and endless drift live. A
-byte comparison is the only comparison that gives a stable, repeatable answer
-to "is this converged?"
+churn. That canonical form does not depend on how the document was written:
+a YAML source and a JSON source with equivalent content reduce to
+byte-identical canonical JSON, so re-encoding a document from one to the
+other at the same path is not drift — the tool computes the same value and
+rewrites nothing. The flip side is the honest one: a value already living in
+AWS that is *not* byte-identical to that canonical form is rewritten, even if
+a human would call it "the same JSON." The tool has no notion of "close
+enough," because "close enough" is where non-determinism and endless drift
+live. A byte comparison is the only comparison that gives a stable, repeatable
+answer to "is this converged?"
 
 ## Convergence, and what "done" means
 

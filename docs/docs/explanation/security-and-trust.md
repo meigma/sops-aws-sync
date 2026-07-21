@@ -18,18 +18,19 @@ throughout.
 ## What is actually secret
 
 The most dangerous assumption an operator can bring to this tool is that
-everything inside a `*.sops.json` file is secret. It is not, and acting
-as though it is will eventually leak something you believed was
+everything inside a committed SOPS document is secret. It is not, and
+acting as though it is will eventually leak something you believed was
 protected.
 
 SOPS encrypts *values*, not whole documents. It supports partial
 encryption, and the tool accepts that faithfully: it delegates
 decryption wholesale to SOPS and never asserts that every leaf was
 encrypted. Whatever your encryption policy left in cleartext stays in
-cleartext in the committed file. In practice, a committed `*.sops.json`
-exposes, to anyone who can read the repository:
+cleartext in the committed file. In practice, a committed SOPS document
+— a `.sops.json`, `.sops.yaml`, or `.sops.yml` file — exposes, to
+anyone who can read the repository:
 
-- the JSON structure itself — every object key and member name;
+- the document structure itself — every key and member name;
 - any leaf your policy deliberately left unencrypted;
 - the SOPS metadata block, which can name key backends and identifiers
   such as a KMS ARN or an age recipient;
@@ -41,7 +42,7 @@ confidential in Git only to the extent your repository's access controls
 make them so. The tool's confidentiality guarantees begin at the point
 of decryption and apply to what the tool does with the plaintext; they
 say nothing about what SOPS chose to leave visible in the file you
-committed. Treat the cleartext portions of a `*.sops.json` as public to
+committed. Treat the cleartext portions of a SOPS document as public to
 everyone with repository access, and design your key layout and
 repository permissions on that basis.
 
@@ -248,7 +249,7 @@ access](../how-to/grant-aws-access.md).
 
 ## Common misconceptions
 
-### "Everything in a `.sops.json` file is confidential"
+### "Everything in a SOPS document is confidential"
 
 Only the encrypted values are. Keys, structure, unencrypted leaves, SOPS
 metadata, and the file path are cleartext in Git and are only as private

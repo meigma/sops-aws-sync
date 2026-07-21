@@ -19,8 +19,8 @@ same operations with the equivalent inputs (see
 
 ## Retire a single secret
 
-Removing one committed `.sops.json` while others remain schedules that one
-secret for deletion.
+Removing one committed source document while others remain schedules that
+one secret for deletion.
 
 ### 1. Remove the source file and commit
 
@@ -73,15 +73,15 @@ for why a missing source root is rejected first).
 Commit a placeholder that is not itself a source document alongside the
 removals:
 
-    git rm secrets/payments/*.sops.json
+    git rm secrets/payments/*.sops.*
     touch secrets/.gitkeep
     git add secrets/.gitkeep
     git commit -m "Empty payments scope"
     git push
 
 The placeholder keeps the directory in the committed tree. It does not end in
-`.sops.json`, so it is ignored as a desired document and the desired snapshot
-is genuinely empty.
+`.sops.json`, `.sops.yaml`, or `.sops.yml`, so it is ignored as a desired
+document and the desired snapshot is genuinely empty.
 
 ### 2. Authorize the empty transition
 

@@ -61,7 +61,7 @@ for the operational consequence.
 
 KMS access is conditional on how your documents and secrets are encrypted:
 
-- **`kms:Decrypt`** is needed when a `.sops.json` file references an AWS KMS key
+- **`kms:Decrypt`** is needed when a source document references an AWS KMS key
   in its own metadata (SOPS calls KMS in-process to decrypt it), and when a
   Secrets Manager secret is encrypted with a customer-managed key (AWS calls KMS
   server-side to read it).
@@ -168,8 +168,8 @@ exit 0 and no `AccessDenied` or normalized error metadata in the JSON logs. The
 status itself may legitimately be `drift` — against a scratch scope that owns
 nothing yet, every committed document classifies as a pending create, and
 `drift` confirms discovery and credentials work just as well as `converged`
-does. Only a scope whose `--source-root` holds no committed `.sops.json`
-documents reports `converged`.
+does. Only a scope whose `--source-root` holds no committed source documents
+reports `converged`.
 
 Because `plan` is read-only, it verifies discovery (`ListSecrets`), region
 resolution, and the credential chain — plus read access on any secrets the scope

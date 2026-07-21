@@ -46,7 +46,8 @@ The run was rejected before or during planning. Common causes and what to do:
    [configuration reference](../reference/configuration.md) for exact names,
    types, and precedence.
 2. **A missing or malformed source tree.** A non-existent source root, or a
-   decrypted document that is not a single top-level JSON object, contains
+   decrypted JSON or YAML document that is not a single top-level object (a JSON
+   object, or a single YAML document with a top-level mapping), contains
    duplicate keys, is not UTF-8, exceeds the canonical size limit, or fails
    SOPS MAC verification. Correct the committed files and push; the constraints
    are catalogued in the

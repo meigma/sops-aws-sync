@@ -144,6 +144,25 @@ narrower question inside an owned scope: "did this secret come from *this exact
 committed file?*" It is a hash of the file's normalized, repository-relative
 path, recorded at creation time alongside the scope.
 
+The word "file" there is deliberately logical, not literal — a distinction that
+matters now that a source document can be committed as JSON or YAML. Before it is
+hashed, the path's encoding suffix is folded to one canonical form, so
+`db.sops.json`, `db.sops.yaml`, and `db.sops.yml` sitting at the same location
+all produce the identical source digest. The derived secret name strips the
+encoding suffix too, so those three also resolve to the identical name.
+Re-encoding a document in place — rewriting a JSON source as YAML, say — therefore
+changes neither the name nor the source tag: ownership carries straight over and
+the tool keeps reconciling the secret exactly where it stood. That is safe
+because both encodings decrypt to the *same* canonical value, so an encoding-only
+change is a true no-op — there is nothing to update and no drift to detect.
+
+What the source identity still tracks is the document's logical position: its
+stem and its directory beneath the source root. Change either — rename the stem,
+or move the document into a different subdirectory — and the hashed path changes,
+so the tool sees a genuinely different source. That is the intended behavior: a
+document at a new location is a new source of truth, and only its encoding is
+treated as an interchangeable detail.
+
 Its job is to stop one file from silently commandeering a name that another file
 established. Suppose a secret was created from `secrets/db/prod.sops.json` and
 carries that path's source digest. Later, a *different* committed file comes to

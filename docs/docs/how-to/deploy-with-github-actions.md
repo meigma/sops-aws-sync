@@ -16,7 +16,8 @@ a pinned, provenance-verified CLI.
   re-derive it here.
 - SOPS decryption keys reachable from the runner (age/KMS/PGP/Vault, resolved
   by SOPS from its own environment and each file's metadata).
-- Committed `*.sops.json` files laid out under a source root, per the
+- Committed `*.sops.json`, `*.sops.yaml`, or `*.sops.yml` files laid out under
+  a source root, per the
   [Reconciliation reference](../reference/reconciliation.md).
 - A chosen, frozen ownership scope — the `repository-id`, `source-root`, and
   `secret-prefix` triple. Treat these as an immutable identity; changing any of
@@ -47,7 +48,7 @@ permissions: {}
 jobs:
   reconcile:
     permissions:
-      contents: read      # read the committed .sops.json blobs
+      contents: read      # read the committed SOPS document blobs
       id-token: write     # mint the GitHub OIDC token for AWS
       attestations: read  # read a private repo's CLI attestations
 ```
