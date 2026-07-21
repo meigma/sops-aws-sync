@@ -10,7 +10,7 @@ release before invoking it without a shell.
 
 Immutable releases contain Linux and macOS binaries for amd64 and arm64,
 `checksums.txt`, per-binary SBOMs, and GitHub provenance attestations. See
-[release verification](https://meigma.github.io/sops-aws-sync/release-verification/)
+[how to verify a release binary](https://meigma.github.io/sops-aws-sync/how-to/verify-a-release-binary/)
 before executing a downloaded binary.
 
 To build from source with the repository toolchain:
@@ -120,9 +120,27 @@ contents and attestations.
 
 ## Documentation
 
-The [operator documentation](https://meigma.github.io/sops-aws-sync/) covers
-configuration, Action trust, AWS/KMS/IAM requirements, interruption and
-consistency behavior, logging, recovery, and release verification.
+The [operator documentation](https://meigma.github.io/sops-aws-sync/) is
+organized by need:
+
+- New to the tool: the
+  [first reconciliation tutorial](https://meigma.github.io/sops-aws-sync/tutorial/first-reconciliation/)
+  walks the plan, sync, and verify loop against a disposable scope.
+- Deploying: how-to guides cover
+  [GitHub Actions deployment](https://meigma.github.io/sops-aws-sync/how-to/deploy-with-github-actions/),
+  [least-privilege AWS access](https://meigma.github.io/sops-aws-sync/how-to/grant-aws-access/),
+  [release verification](https://meigma.github.io/sops-aws-sync/how-to/verify-a-release-binary/),
+  [decommissioning a scope](https://meigma.github.io/sops-aws-sync/how-to/decommission-a-scope/),
+  and [diagnosing failed runs](https://meigma.github.io/sops-aws-sync/how-to/diagnose-and-recover/).
+- Understanding the system: explanations of the
+  [reconciliation model](https://meigma.github.io/sops-aws-sync/explanation/reconciliation-model/),
+  [ownership and scope](https://meigma.github.io/sops-aws-sync/explanation/ownership-and-scope/),
+  [consistency and recovery](https://meigma.github.io/sops-aws-sync/explanation/consistency-and-recovery/),
+  and the [security and trust model](https://meigma.github.io/sops-aws-sync/explanation/security-and-trust/).
+- Looking something up: references for
+  [configuration](https://meigma.github.io/sops-aws-sync/reference/configuration/),
+  [reconciliation rules](https://meigma.github.io/sops-aws-sync/reference/reconciliation/),
+  and [results and exit codes](https://meigma.github.io/sops-aws-sync/reference/results/).
 
 ## Development
 

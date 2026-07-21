@@ -35,10 +35,23 @@ theme:
 
 nav:
   - Home: index.md
-  - Configuration: configuration.md
-  - GitHub Action: github-action.md
-  - Operations and security: operations-and-security.md
-  - Release verification: release-verification.md
+  - Tutorial:
+      - Your first reconciliation: tutorial/first-reconciliation.md
+  - How-to guides:
+      - Deploy with GitHub Actions: how-to/deploy-with-github-actions.md
+      - Grant AWS access: how-to/grant-aws-access.md
+      - Verify a release binary: how-to/verify-a-release-binary.md
+      - Decommission a scope: how-to/decommission-a-scope.md
+      - Diagnose and recover: how-to/diagnose-and-recover.md
+  - Explanation:
+      - The reconciliation model: explanation/reconciliation-model.md
+      - Ownership and scope: explanation/ownership-and-scope.md
+      - Consistency and recovery: explanation/consistency-and-recovery.md
+      - Security and trust: explanation/security-and-trust.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - Reconciliation: reference/reconciliation.md
+      - Results and exit codes: reference/results.md
 
 plugins:
   - search
